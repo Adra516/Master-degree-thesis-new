@@ -1,0 +1,24 @@
+<launch>
+  <!--
+    locobot_table.launch
+    --------------------
+    Shortcut launch file that starts the full locobot simulation inside the
+    table+objects world with the vision pipeline active and targeting a bottle.
+
+    Usage:
+      roslaunch locobot_prog locobot_table.launch
+
+    Optional overrides (same as locobot.launch):
+      vision_target_object:=cup
+      yolo_target_classes:="['cup','bottle']"
+      vlm_process_rate:=0.5
+  -->
+  <include file="$(find locobot_prog)/launch/locobot.launch">
+    <!-- Select the table world by passing world_name directly -->
+    <arg name="world_name"            value="$(find locobot_prog)/worlds/locobot_table_objects.world"/>
+
+    <!-- Enable the full vision pipeline -->
+    <arg name="use_vision_nodes"      value="true"/>
+    <arg name="vision_target_object"  value="bottle"/>
+  </include>
+</launch>

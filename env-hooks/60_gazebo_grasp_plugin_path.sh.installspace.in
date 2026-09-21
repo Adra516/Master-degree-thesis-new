@@ -1,0 +1,2 @@
+# Install-space variant: point GAZEBO_PLUGIN_PATH at the install lib dir.
+export GAZEBO_PLUGIN_PATH=@CMAKE_INSTALL_PREFIX@/lib${GAZEBO_PLUGIN_PATH:+:$GAZEBO_PLUGIN_PATH}

@@ -1,0 +1,216 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="locobot_table_arm">
+
+    <gravity>0 0 -9.81</gravity>
+
+    <physics type="ode">
+      <real_time_update_rate>500.0</real_time_update_rate>
+      <max_step_size>0.002</max_step_size>
+      <real_time_factor>1</real_time_factor>
+    </physics>
+
+    <scene>
+      <ambient>0.6 0.6 0.6 1</ambient>
+      <background>0.87 0.92 0.98 1</background>
+      <shadows>false</shadows>
+    </scene>
+
+    <!-- ── Lighting ────────────────────────────────────────────────────── -->
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <!-- ── Ground plane ───────────────────────────────────────────────── -->
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <!-- ── GUI camera ─────────────────────────────────────────────────── -->
+    <gui fullscreen="0">
+      <camera name="user_camera">
+        <pose>-1.2 0.0 2.0 0 0.65 0.0</pose>
+        <view_controller>orbit</view_controller>
+      </camera>
+    </gui>
+
+    <!-- ── Room walls ─────────────────────────────────────────────────── -->
+    <model name="wall_north">
+      <static>true</static>
+      <pose>1.5 3.0 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>6.0 0.2 2.0</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>6.0 0.2 2.0</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_south">
+      <static>true</static>
+      <pose>1.5 -3.0 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>6.0 0.2 2.0</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>6.0 0.2 2.0</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_east">
+      <static>true</static>
+      <pose>4.5 0.0 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.2 6.0 2.0</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.2 6.0 2.0</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_west">
+      <static>true</static>
+      <pose>-1.5 0.0 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.2 6.0 2.0</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.2 6.0 2.0</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         TABLE
+         ──────────────────────────────────────────────────────────────────
+         Dimensions : 0.4 m (depth, X) × 0.8 m (width, Y) × 0.25 m tall
+         The LONG side (0.8 m) is along Y and therefore faces the robot,
+         which spawns at the origin looking toward +X.
+
+         Table centre  : x = 0.70 m  (near edge at x ≈ 0.50 m from robot)
+         Table-top surface : z = 0.25 m
+
+         Arm reachability note (WidowX 250s):
+           arm base height ≈ 0.28 m, max horizontal reach ≈ 0.55 m.
+           Objects placed at x ≈ 0.45–0.50 m → well within reach.
+           Table height 0.25 m ≈ arm base − 0.03 m → arm points slightly down,
+           giving comfortable manipulation clearance.
+         ══════════════════════════════════════════════════════════════════ -->
+    <model name="table">
+      <static>true</static>
+      <pose>0.70 0.0 0 0 0 0</pose>
+
+      <!-- Table top  0.4 (X) × 0.8 (Y) × 0.05 (Z) -->
+      <link name="top">
+        <pose>0 0 0.225 0 0 0</pose>
+        <collision name="top_col">
+          <geometry><box><size>0.4 0.8 0.05</size></box></geometry>
+        </collision>
+        <visual name="top_vis">
+          <geometry><box><size>0.4 0.8 0.05</size></box></geometry>
+          <material>
+            <ambient>0.55 0.35 0.15 1</ambient>
+            <diffuse>0.65 0.42 0.18 1</diffuse>
+          </material>
+        </visual>
+      </link>
+
+      <!-- Legs height = 0.20 m, centre at z = 0.10 m -->
+      <!-- front = toward robot (-X in table frame), left = -Y, right = +Y -->
+      <link name="leg_fl">
+        <pose>-0.165 -0.365 0.10 0 0 0</pose>
+        <collision name="c"><geometry><box><size>0.05 0.05 0.20</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.05 0.05 0.20</size></box></geometry>
+          <material><ambient>0.4 0.25 0.1 1</ambient><diffuse>0.5 0.3 0.12 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="leg_fr">
+        <pose>-0.165  0.365 0.10 0 0 0</pose>
+        <collision name="c"><geometry><box><size>0.05 0.05 0.20</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.05 0.05 0.20</size></box></geometry>
+          <material><ambient>0.4 0.25 0.1 1</ambient><diffuse>0.5 0.3 0.12 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="leg_bl">
+        <pose> 0.165 -0.365 0.10 0 0 0</pose>
+        <collision name="c"><geometry><box><size>0.05 0.05 0.20</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.05 0.05 0.20</size></box></geometry>
+          <material><ambient>0.4 0.25 0.1 1</ambient><diffuse>0.5 0.3 0.12 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="leg_br">
+        <pose> 0.165  0.365 0.10 0 0 0</pose>
+        <collision name="c"><geometry><box><size>0.05 0.05 0.20</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.05 0.05 0.20</size></box></geometry>
+          <material><ambient>0.4 0.25 0.1 1</ambient><diffuse>0.5 0.3 0.12 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         OBJECTS ON THE TABLE  (table top surface at z = 0.25 m)
+         Objects are spread along Y so they are all visible from the front.
+         ══════════════════════════════════════════════════════════════════ -->
+
+    <!-- ── Beer bottle (bottle_beer from models folder) ──────────────── -->
+    <include>
+      <uri>model://bottle_beer</uri>
+      <name>bottle</name>
+      <pose>0.68 -0.10 0.25 0 0 0</pose>
+      <static>false</static>
+    </include>
+    
+    <!-- ── Tea box (replaces the tissue box — GRASP TARGET) ────────────────
+         Square-footprint box, rescaled in the model to 0.06 x 0.06 x 0.09 m.
+         WHY those dimensions: with the top-down approach removed the grasp is
+         HORIZONTAL only, and the jaws close at a floor of 7 cm above the table
+         (_compute_grasp_z) — so the target must be TALLER than that (9 cm puts
+         the grip mid-body) while staying inside the gripper's ~74 mm opening
+         (6 cm -> ~7 mm clearance per side).  The old tissue box was only 2.6 cm
+         tall, i.e. ungraspable horizontally: the jaws closed on air above it.
+         Model origin is the box BASE, so pose.z = table surface. -->
+    <include>
+      <uri>model://tea_box</uri>
+      <name>tea_box</name>
+      <pose>0.70 0.15 0.251 0 0 0</pose>
+      <static>false</static>
+    </include>
+
+    <!-- ── Coke can (replaces wood_cube_b — scene diversity) ────────────── -->
+    <!-- Mesh origin is at the can's BASE (not centre, unlike the box
+         primitives above) — pose.z = table surface, not surface + half-height. -->
+    <include>
+      <uri>model://can_coke</uri>
+      <name>can_coke</name>
+      <pose>0.66 0.25 0.251 0 0 0</pose>
+      <static>false</static>
+    </include>
+
+    <!-- Ball  r=0.035 m → z = 0.25+0.035 = 0.285
+         REVERTED from brick_sphere_1 (07-24): that textured mesh scored ZERO
+         YOLO detections in practice (measured on the user's machine), while
+         this plain primitive sphere WAS reliably recognized — a solid round
+         silhouette is apparently enough signal on its own (unlike the flat
+         primitive BOXES, which really do need texture).  Kept as a dynamic
+         body (rolls on contact) because YOLO-visibility matters more right
+         now than staying put. -->
+    <model name="ball">
+      <pose>0.70 -0.22 0.285 0 0 0</pose>
+      <link name="link">
+        <collision name="c">
+          <geometry><sphere><radius>0.035</radius></sphere></geometry>
+          <surface><friction><ode><mu>0.6</mu><mu2>0.6</mu2></ode></friction></surface>
+        </collision>
+        <visual name="v">
+          <geometry><sphere><radius>0.035</radius></sphere></geometry>
+          <material>
+            <ambient>0.7 0.05 0.05 1</ambient>
+            <diffuse>0.85 0.08 0.08 1</diffuse>
+          </material>
+        </visual>
+        <inertial>
+          <mass>0.156</mass>
+          <inertia><ixx>8.76e-5</ixx><iyy>8.76e-5</iyy><izz>8.76e-5</izz>
+                   <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
+        </inertial>
+      </link>
+    </model>
+
+  </world>
+</sdf>

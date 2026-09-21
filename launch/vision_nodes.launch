@@ -1,0 +1,79 @@
+<launch>
+
+  <arg name="robot_name"          default="locobot"/>
+  <arg name="target_object"       default="target_object"/>
+
+  <!-- VLM agent args -->
+  <arg name="vlm_model"           default="qwen3-vl:2b-instruct"/>
+  <arg name="max_agent_steps"     default="5"/>
+  <arg name="grasp_min_interval_s" default="5.0"/>
+
+  <!-- YOLO args -->
+  <arg name="yolo_model"          default="/home/adrana/th_ws/YOLO-3D/yolo11n.pt"/>
+  <arg name="yolo_process_rate"   default="5.0"/>
+  <!-- 'airplane'/'book' added for the tissue-box grasp target (replaces the
+       plain wood cube — undetectable, no texture) and 'cell phone' for the
+       coke-can scene object: empirically measured class labels (see
+       locobot-grasp-pipeline-state memory 2026-07-XX), same pragmatic
+       class-name-mismatch pattern as bottle->'vase'. -->
+  <arg name="yolo_target_classes" default="['bottle','vase','cup','person','dining table','airplane','book','cell phone']"/>
+  <arg name="yolo_conf_threshold" default="0.10"/>
+  <arg name="yolo_publish_image"  default="true"/>
+
+  <!-- ── YOLO 3D detection node ───────────────────────────────────────── -->
+  <node
+    pkg="locobot_prog"
+    type="yolo_detection_node.py"
+    name="yolo_detection"
+    output="screen"
+    ns="$(arg robot_name)">
+    <param name="robot_name"     value="$(arg robot_name)"/>
+    <param name="yolo_model"     value="$(arg yolo_model)"/>
+    <param name="target_object"  value="$(arg target_object)"/>
+    <param name="process_rate"   value="$(arg yolo_process_rate)"/>
+    <param name="conf_threshold" value="$(arg yolo_conf_threshold)"/>
+    <param name="publish_image"  value="$(arg yolo_publish_image)"/>
+    <rosparam param="target_classes" subst_value="True">$(arg yolo_target_classes)</rosparam>
+    <!-- No target_aliases param here on purpose: yolo_detection_node.py now
+         auto-derives the correct alias set FROM target_object (bottle->vase,
+         airplane->book) — a fixed list here would apply BOTH aliases
+         regardless of which target_object is active, letting the bottle
+         (detected far more reliably than the box) keep winning "is_target"
+         even when the box was the one actually requested. -->
+  </node>
+
+  <!-- ── VLM agent node (inspect_scene + get_object tools) ────────────── -->
+  <node
+    pkg="locobot_prog"
+    type="vlm_agent_node.py"
+    name="vlm_agent"
+    output="screen"
+    ns="$(arg robot_name)">
+    <param name="robot_name"            value="$(arg robot_name)"/>
+    <param name="target_object"         value="$(arg target_object)"/>
+    <param name="vlm_model"             value="$(arg vlm_model)"/>
+    <param name="max_agent_steps"       value="$(arg max_agent_steps)"/>
+    <param name="grasp_min_interval_s"  value="$(arg grasp_min_interval_s)"/>
+  </node>
+
+  <!-- ── Motion service node ──────────────────────────────────────────── -->
+  <node
+    pkg="locobot_prog"
+    type="locobot_motion_node.py"
+    name="locobot_motion"
+    output="screen"
+    ns="$(arg robot_name)">
+    <param name="robot_name" value="$(arg robot_name)"/>
+  </node>
+
+  <!-- ── Point camera toward table on startup ─────────────────────────── -->
+  <!-- tilt=0.55 rad: more downward to see table at x~0.70 m              -->
+  <!-- pan=0.0 rad: straight ahead                                         -->
+  <node pkg="locobot_prog" type="set_camera_angle.py" name="set_camera_angle"
+        output="screen" ns="$(arg robot_name)">
+    <param name="pan"   value="0.0"/>
+    <param name="tilt"  value="0.35"/>
+    <param name="delay" value="4.0"/>
+  </node>
+
+</launch>

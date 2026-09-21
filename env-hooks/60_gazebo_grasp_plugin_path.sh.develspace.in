@@ -1,0 +1,6 @@
+# Make the locally-built gazebo_grasp_fix plugin discoverable by gzserver.
+# The .so is built into the workspace devel/lib, which is NOT on GAZEBO_PLUGIN_PATH
+# by default, so gzserver (launched deep inside the interbotix includes) can't find
+# it. Prepend the devel lib dir here so any shell that sources devel/setup.bash —
+# and therefore any roslaunch it starts — exports it.
+export GAZEBO_PLUGIN_PATH=@CATKIN_DEVEL_PREFIX@/lib${GAZEBO_PLUGIN_PATH:+:$GAZEBO_PLUGIN_PATH}

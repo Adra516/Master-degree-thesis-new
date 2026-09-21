@@ -1,0 +1,26 @@
+<launch>
+  <!--
+    locobot_table_arm.launch
+    ========================
+    Starts the full locobot simulation in the arm-reachable table world.
+    The table's LONG side (1.2 m) faces the robot; table height is 0.40 m
+    and the near edge is ~0.45 m from the robot base — within the WidowX
+    arm reach — so the robot can both navigate to the table and manipulate
+    the objects on it.
+
+    Usage:
+      roslaunch locobot_prog locobot_table_arm.launch
+
+    Optional overrides:
+      vision_target_object:=cup
+      vlm_process_rate:=0.5
+  -->
+  <!-- Grasp-fix plugin (external_urdf_loc) and the forearm_roll gain override are
+       applied inside locobot.launch itself, so they are active for BOTH this
+       wrapper and a direct `roslaunch locobot_prog locobot.launch`. -->
+  <include file="$(find locobot_prog)/launch/locobot.launch">
+    <arg name="world_name"           value="$(find locobot_prog)/worlds/locobot_table_arm.world"/>
+    <arg name="use_vision_nodes"     value="true"/>
+    <arg name="vision_target_object" value="bottle"/>
+  </include>
+</launch>

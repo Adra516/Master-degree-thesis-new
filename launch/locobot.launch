@@ -1,0 +1,216 @@
+<launch>
+
+  <arg name="robot_name"                        default="locobot"/>
+  <arg name="robot_model"                       default="locobot_wx250s"/>
+  <arg name="base_type"                         default="create3"/>
+  <arg name="dof"                               default="6"/>
+
+  <arg name="use_sim"                           default="true"/>
+  <arg name="use_gazebo"                        default="true"/>
+  <arg name="use_sim_time"                      default="true"/>
+  <arg name="use_rviz"                          default="false"/>
+  <arg name="use_nav"                           default="true"/>
+  <arg name="use_moveit"                        default="true"/>
+  <arg name="use_moveit_rviz"                   default="false"/>
+  <arg name="use_manipulator"                   default="true"/>
+  <arg name="use_lidar"                         default="true"/>
+  <arg name="use_camera"                        default="true"/>
+  <arg name="use_perception"                    default="false"/>
+
+  <arg name="rviz_frame"                        default="$(arg robot_name)/base_footprint"/>
+  <arg name="world_name"                        default="$(find locobot_prog)/worlds/locobot_table_arm.world"/>
+  <arg name="gui"                               default="true"/>
+  <arg name="debug"                             default="false"/>
+  <arg name="paused"                            default="false"/>
+  <arg name="recording"                         default="false"/>
+
+  <arg name="show_gripper_bar"                  default="true"/>
+  <arg name="show_gripper_fingers"              default="true"/>
+  <!-- Default to the gazebo_grasp_fix plugin xacro so the gripper physically
+       holds grasped objects, regardless of which top-level launch is used. -->
+  <arg name="external_urdf_loc"                 default="$(find locobot_prog)/urdf/grasp_fix.urdf.xacro"/>
+  <arg name="external_srdf_loc"                 default=""/>
+
+  <arg name="filters"                           default="pointcloud"/>
+  <arg name="align_depth"                       default="false"/>
+  <arg name="color_fps"                         default="15"/>
+  <arg name="color_width"                       default="320"/>
+  <arg name="color_height"                      default="240"/>
+  <arg name="depth_fps"                         default="15"/>
+  <arg name="depth_width"                       default="320"/>
+  <arg name="depth_height"                      default="240"/>
+
+  <arg name="use_vision_nodes"                  default="false"/>
+  <arg name="vision_target_object"              default="target_object"/>
+  <arg name="vlm_process_rate"                  default="1.0"/>
+  <arg name="yolo_process_rate"                 default="5.0"/>
+  <arg name="yolo_model"                        default="yolov8n.pt"/>
+  <arg name="vlm_model"                         default="qwen3-vl:2b-instruct"/>
+  <arg name="vlm_ollama_api_url"                default="http://localhost:11434/api/chat"/>
+  <arg name="vlm_request_timeout"               default="60.0"/>
+  <arg name="vlm_action_enabled"                default="true"/>
+
+  <arg if="$(arg use_manipulator)" name="robot_model_resolved" value="$(arg robot_model)"/>
+  <arg unless="$(arg use_manipulator)" name="robot_model_resolved" value="locobot_base"/>
+
+  <arg if="$(arg use_lidar)" name="show_lidar" value="true"/>
+  <arg unless="$(arg use_lidar)" name="show_lidar" value="false"/>
+
+  <param name="$(arg robot_name)/use_base"      value="$(arg use_sim)"/>
+  <param name="$(arg robot_name)/base_type"     value="$(arg base_type)"/>
+  <param name="use_sim_time"                    value="$(arg use_sim_time)"/>
+
+  <group if="$(eval arg('use_gazebo') and not arg('use_nav') and not arg('use_moveit'))">
+    <include file="$(find interbotix_xslocobot_gazebo)/launch/xslocobot_gazebo.launch">
+      <arg name="robot_model"                     value="$(arg robot_model_resolved)"/>
+      <arg name="robot_name"                      value="$(arg robot_name)"/>
+      <arg name="show_lidar"                      value="$(arg show_lidar)"/>
+      <arg name="show_gripper_bar"                value="$(arg show_gripper_bar)"/>
+      <arg name="show_gripper_fingers"            value="$(arg show_gripper_fingers)"/>
+      <arg name="external_urdf_loc"               value="$(arg external_urdf_loc)"/>
+      <arg name="use_rviz"                        value="$(eval arg('use_rviz') and not (arg('use_moveit') and arg('use_moveit_rviz')))"/>
+      <arg name="rviz_frame"                      value="$(arg rviz_frame)"/>
+      <arg name="world_name"                      value="$(arg world_name)"/>
+      <arg name="gui"                             value="$(arg gui)"/>
+      <arg name="debug"                           value="$(arg debug)"/>
+      <arg name="paused"                          value="$(arg paused)"/>
+      <arg name="recording"                       value="$(arg recording)"/>
+      <arg name="use_sim_time"                    value="$(arg use_sim_time)"/>
+      <arg name="use_trajectory_controllers"      value="$(arg use_manipulator)"/>
+      <arg name="dof"                             value="$(arg dof)"/>
+    </include>
+  </group>
+
+  <group if="$(arg use_nav)">
+    <include file="$(find interbotix_xslocobot_nav)/launch/xslocobot_nav_sim.launch">
+      <arg name="robot_model"                     value="$(arg robot_model_resolved)"/>
+      <arg name="robot_name"                      value="$(arg robot_name)"/>
+      <arg name="use_lidar"                       value="$(arg use_lidar)"/>
+      <arg name="show_gripper_bar"                value="$(arg show_gripper_bar)"/>
+      <arg name="show_gripper_fingers"            value="$(arg show_gripper_fingers)"/>
+      <arg name="external_urdf_loc"               value="$(arg external_urdf_loc)"/>
+      <arg name="use_rviz"                        value="$(eval arg('use_rviz') and not (arg('use_moveit') and arg('use_moveit_rviz')))"/>
+      <arg name="base_type"                       value="$(arg base_type)"/>
+      <arg name="rviz_frame"                      value="map"/>
+      <arg name="world_name"                      value="$(arg world_name)"/>
+      <arg name="gui"                             value="$(arg gui)"/>
+      <arg name="debug"                           value="$(arg debug)"/>
+      <arg name="paused"                          value="$(arg paused)"/>
+      <arg name="recording"                       value="$(arg recording)"/>
+      <arg name="use_sim_time"                    value="$(arg use_sim_time)"/>
+      <arg name="use_trajectory_controllers"      value="$(arg use_manipulator)"/>
+      <arg name="dof"                             value="$(arg dof)"/>
+      <!-- Always start with a fresh map to avoid DB corruption crashes -->
+      <arg name="rtabmap_args"                    value="--delete_db_on_start"/>
+    </include>
+  </group>
+
+  <group if="$(eval arg('use_nav') and arg('use_moveit') and arg('use_manipulator'))">
+    <include file="$(find interbotix_xslocobot_moveit)/launch/move_group.launch" ns="$(arg robot_name)">
+      <arg name="robot_model"                     value="$(arg robot_model_resolved)"/>
+      <arg name="robot_name"                      value="$(arg robot_name)"/>
+      <arg name="show_lidar"                      value="$(arg show_lidar)"/>
+      <arg name="external_srdf_loc"               value="$(arg external_srdf_loc)"/>
+      <arg name="dof"                             value="$(arg dof)"/>
+      <arg name="use_camera"                      value="$(arg use_camera)"/>
+      <arg name="fake_execution"                  value="false"/>
+      <arg name="publish_monitored_planning_scene" value="true"/>
+    </include>
+
+    <node if="$(eval arg('use_rviz') and arg('use_moveit_rviz'))"
+          name="rviz"
+          pkg="rviz"
+          type="rviz"
+          ns="$(arg robot_name)"
+          launch-prefix="bash -c 'sleep 12 &amp;&amp; $0 $@'"
+          args="-f map -d $(find locobot_prog)/rviz/locobot_moveit.rviz"
+          output="screen">
+      <rosparam command="load" file="$(find interbotix_xslocobot_moveit)/config/kinematics.yaml"/>
+      <remap from="/clicked_point" to="clicked_point"/>
+      <remap from="/initialpose" to="initialpose"/>
+      <remap from="/move_base_simple/goal" to="move_base_simple/goal"/>
+    </node>
+  </group>
+
+  <group if="$(eval arg('use_moveit') and arg('use_manipulator') and not arg('use_nav'))">
+    <include file="$(find interbotix_xslocobot_moveit)/launch/xslocobot_moveit.launch">
+      <arg name="robot_model"                     value="$(arg robot_model_resolved)"/>
+      <arg name="robot_name"                      value="$(arg robot_name)"/>
+      <arg name="show_lidar"                      value="$(arg show_lidar)"/>
+      <arg name="external_urdf_loc"               value="$(arg external_urdf_loc)"/>
+      <arg name="external_srdf_loc"               value="$(arg external_srdf_loc)"/>
+      <arg name="use_gazebo"                      value="$(arg use_gazebo)"/>
+      <arg name="use_actual"                      value="false"/>
+      <arg name="use_fake"                        value="false"/>
+      <arg name="dof"                             value="$(arg dof)"/>
+      <arg name="use_camera"                      value="$(arg use_camera)"/>
+      <arg name="use_moveit_rviz"                 value="$(arg use_moveit_rviz)"/>
+      <arg name="world_name"                      value="$(arg world_name)"/>
+      <arg name="paused"                          value="$(arg paused)"/>
+    </include>
+  </group>
+
+  <group if="$(eval arg('use_perception') and arg('use_camera') and not arg('use_nav'))">
+    <include file="$(find interbotix_xslocobot_perception)/launch/xslocobot_perception.launch">
+      <arg name="robot_model"                     value="$(arg robot_model_resolved)"/>
+      <arg name="robot_name"                      value="$(arg robot_name)"/>
+      <arg name="external_urdf_loc"               value="$(arg external_urdf_loc)"/>
+      <arg name="use_rviz"                        value="false"/>
+      <arg name="rviz_frame"                      value="$(arg rviz_frame)"/>
+      <arg name="launch_driver"                   value="false"/>
+      <arg name="filters"                         value="$(arg filters)"/>
+      <arg name="color_fps"                       value="$(arg color_fps)"/>
+      <arg name="color_width"                     value="$(arg color_width)"/>
+      <arg name="color_height"                    value="$(arg color_height)"/>
+      <arg name="depth_fps"                       value="$(arg depth_fps)"/>
+      <arg name="depth_width"                     value="$(arg depth_width)"/>
+      <arg name="depth_height"                    value="$(arg depth_height)"/>
+    </include>
+  </group>
+
+  <include if="$(eval arg('use_camera') and not arg('use_sim') and not arg('use_nav') and not arg('use_perception'))"
+           file="$(find realsense2_camera)/launch/rs_camera.launch"
+           ns="$(arg robot_name)">
+    <arg name="tf_prefix"                         value="$(arg robot_name)/camera"/>
+    <arg name="filters"                           value="$(arg filters)"/>
+    <arg name="align_depth"                       value="$(arg align_depth)"/>
+    <arg name="color_fps"                         value="$(arg color_fps)"/>
+    <arg name="color_width"                       value="$(arg color_width)"/>
+    <arg name="color_height"                      value="$(arg color_height)"/>
+    <arg name="depth_fps"                         value="$(arg depth_fps)"/>
+    <arg name="depth_width"                       value="$(arg depth_width)"/>
+    <arg name="depth_height"                      value="$(arg depth_height)"/>
+  </include>
+
+  <include if="$(eval arg('use_rviz') and not arg('use_nav') and not arg('use_gazebo'))"
+           file="$(find interbotix_xslocobot_descriptions)/launch/xslocobot_description.launch">
+    <arg name="robot_model"                       value="$(arg robot_model_resolved)"/>
+    <arg name="robot_name"                        value="$(arg robot_name)"/>
+    <arg name="base_type"                         value="$(arg base_type)"/>
+    <arg name="show_lidar"                        value="$(arg show_lidar)"/>
+    <arg name="show_gripper_bar"                  value="$(arg show_gripper_bar)"/>
+    <arg name="show_gripper_fingers"              value="$(arg show_gripper_fingers)"/>
+    <arg name="external_urdf_loc"                 value="$(arg external_urdf_loc)"/>
+    <arg name="use_rviz"                          value="true"/>
+    <arg name="rviz_frame"                        value="$(arg rviz_frame)"/>
+    <arg name="use_joint_pub"                     value="false"/>
+  </include>
+
+  <!-- Vision System (VLM agent + YOLO Detection + Motion service) -->
+  <include if="$(arg use_vision_nodes)"
+           file="$(find locobot_prog)/launch/vision_nodes.launch">
+    <arg name="robot_name"          value="$(arg robot_name)"/>
+    <arg name="target_object"       value="$(arg vision_target_object)"/>
+    <arg name="yolo_process_rate"   value="$(arg yolo_process_rate)"/>
+    <arg name="yolo_model"          value="$(arg yolo_model)"/>
+    <arg name="vlm_model"           value="$(arg vlm_model)"/>
+  </include>
+
+  <!-- Phase 2: damp forearm_roll. Placed LAST so it overrides the vendor gain
+       (interbotix trajectory_controllers YAML, loaded inside the gazebo/nav
+       include above). roslaunch uploads all params before starting any node,
+       so this wins before the controller_spawner reads the gains. Verify with:
+         rosparam get /locobot/arm_controller/gains/forearm_roll -->
+  <rosparam file="$(find locobot_prog)/config/arm_gains_override.yaml" command="load"/>
+
+</launch>

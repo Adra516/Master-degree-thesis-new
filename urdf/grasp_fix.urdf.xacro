@@ -1,0 +1,60 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro">
+  <!-- LINK_PREFIX is the real URDF link namespace.  Confirmed from
+       interbotix_xslocobot_descriptions (links are "$(arg robot_name)/<link>")
+       and from locobot_motion_node.py which attaches to "locobot/ee_gripper_link"
+       and touches "locobot/{left,right}_finger_link".  robot_name = locobot, so
+       the prefix is "locobot" (NOT "locobot_wx250s", which is the robot_model). -->
+  <xacro:property name="LINK_PREFIX" value="locobot"/>
+
+  <gazebo>
+    <plugin name="gazebo_grasp_fix" filename="libgazebo_grasp_fix.so">
+      <arm>
+        <arm_name>wx250s</arm_name>
+        <palm_link>${LINK_PREFIX}/gripper_link</palm_link>
+        <gripper_link>${LINK_PREFIX}/left_finger_link</gripper_link>
+        <gripper_link>${LINK_PREFIX}/right_finger_link</gripper_link>
+      </arm>
+      <!-- release_tolerance = how far a finger contact point must move from the
+           object before GazeboGraspFix drops the weld (GazeboGraspFix.cpp:
+           `diff > releaseTolerance`).  The ONLY thing that moves that contact
+           point on release is the finger opening, so usable "diff" = finger open
+           travel.  This bottle body is ~66 mm and the finger joint hard limit is
+           0.037 (37 mm), so the finger rests at ~33 mm holding it and can open
+           only ~4 mm.  At the old 0.008 (8 mm) the ~4 mm open NEVER reached the
+           threshold, so the weld never released and the object rode away on the
+           arm ("gripper won't drop it").  Lowered to 0.003 (< the ~4 mm travel)
+           so the deliberate open reliably detaches.  Safe for the hold: the grip
+           was rock-solid at 8 mm (never released at all), so finger↔object jitter
+           during the slow carry is far under 3 mm; and release_tolerance only
+           governs DETACH, never attach strength. -->
+      <forces_angle_tolerance>120</forces_angle_tolerance>
+      <update_rate>20</update_rate>
+      <grip_count_threshold>1</grip_count_threshold>
+      <max_grip_count>8</max_grip_count>
+      <release_tolerance>0.003</release_tolerance>
+      <disable_collisions_on_attach>false</disable_collisions_on_attach>
+    </plugin>
+  </gazebo>
+
+  <!-- High-friction, stiff-contact finger pads.  These <gazebo reference> blocks
+       override the interbotix defaults WITHOUT touching interbotix files, and
+       back up the grasp-fix plugin: even friction-only phases of the hold get
+       ~5x more grip. -->
+  <gazebo reference="${LINK_PREFIX}/left_finger_link">
+    <mu1>5.0</mu1>
+    <mu2>5.0</mu2>
+    <kp>1000000.0</kp>
+    <kd>1.0</kd>
+    <minDepth>0.001</minDepth>
+    <maxVel>0.0</maxVel>
+  </gazebo>
+  <gazebo reference="${LINK_PREFIX}/right_finger_link">
+    <mu1>5.0</mu1>
+    <mu2>5.0</mu2>
+    <kp>1000000.0</kp>
+    <kd>1.0</kd>
+    <minDepth>0.001</minDepth>
+    <maxVel>0.0</maxVel>
+  </gazebo>
+</robot>
