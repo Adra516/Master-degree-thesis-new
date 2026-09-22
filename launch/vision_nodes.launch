@@ -34,12 +34,6 @@
     <param name="conf_threshold" value="$(arg yolo_conf_threshold)"/>
     <param name="publish_image"  value="$(arg yolo_publish_image)"/>
     <rosparam param="target_classes" subst_value="True">$(arg yolo_target_classes)</rosparam>
-    <!-- No target_aliases param here on purpose: yolo_detection_node.py now
-         auto-derives the correct alias set FROM target_object (bottle->vase,
-         airplane->book) — a fixed list here would apply BOTH aliases
-         regardless of which target_object is active, letting the bottle
-         (detected far more reliably than the box) keep winning "is_target"
-         even when the box was the one actually requested. -->
   </node>
 
   <!-- ── VLM agent node (inspect_scene + get_object tools) ────────────── -->

@@ -48,17 +48,12 @@ class YoloDetectionNode:
         self.target_classes = [c.lower() for c in raw_classes]
         self.target_object  = target_object.lower()
 
-        # target_aliases param is an OPTIONAL override; when left empty (the
-        # normal case) the alias set is looked up from target_object, never
-        # a fixed list that could apply to the wrong target.
-        raw_aliases = rospy.get_param("~target_aliases", [])
-        if isinstance(raw_aliases, str):
-            raw_aliases = ast.literal_eval(raw_aliases)
-        if raw_aliases:
-            self.target_aliases = {a.lower() for a in raw_aliases}
-        else:
-            self.target_aliases = {a.lower() for a in
-                                   self._ALIAS_MAP.get(self.target_object, [])}
+        # Always derived FROM target_object, never a fixed/overridable list —
+        # a fixed list would apply to whichever target is active regardless of
+        # which one was actually requested (see _ALIAS_MAP's own comment: this
+        # is what let the bottle keep winning "is_target" over the box).
+        self.target_aliases = {a.lower() for a in
+                               self._ALIAS_MAP.get(self.target_object, [])}
 
         ns = self.robot_name
 
