@@ -21,7 +21,7 @@ from locobot_scene_model import SceneModel
 from target_odom_cache import TargetOdomCache
 import grasp_geometry
 from locobot_geometry import (
-    ARM_REACH_M, ARM_GRASP_DIST, GRIPPER_W_M, TABLE_DEPTH_M, TABLE_ROBOT_MARGIN,
+    ARM_GRASP_DIST, GRIPPER_W_M, TABLE_DEPTH_M, TABLE_ROBOT_MARGIN,
     ZONE_GRASP_READY, ZONE_BLOCKED,
     parse_object, find_blocking, classify_zone,
     compute_grasp, build_summary, render_birdseye, estimate_grasp_orientation,
@@ -67,7 +67,6 @@ class VLMAgentNode:
         self.target_object = rospy.get_param("~target_object", "bottle")
         self.vlm_model     = rospy.get_param("~vlm_model",     "qwen3-vl:2b-instruct")
         self.max_steps     = int(rospy.get_param("~max_steps",  20))
-        self.arm_reach     = float(rospy.get_param("~arm_reach_m",    ARM_REACH_M))
         self.grasp_dist    = float(rospy.get_param("~arm_grasp_dist_m", ARM_GRASP_DIST))
         # Per-target standoff chosen by inverse reachability (see _reach_optimal_standoff).
         self._active_grasp_dist = self.grasp_dist
