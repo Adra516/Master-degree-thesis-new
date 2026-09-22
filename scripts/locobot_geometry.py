@@ -44,7 +44,7 @@ ZONE_COLORS = {
 }
 
 ZONE_TO_ACTION = {
-    ZONE_GRASP_READY:   "execute_grasp",
+    ZONE_GRASP_READY:   "execute_pregrasp",
     ZONE_DRIVE_FORWARD: "drive_forward",
     ZONE_ROTATE_NEEDED: "rotate_to_target",
     ZONE_BLOCKED:       "avoid_obstacle",

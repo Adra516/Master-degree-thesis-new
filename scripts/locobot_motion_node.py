@@ -68,7 +68,7 @@ class LocobotMotionNode:
         # State
         self.gripper_position = GRIPPER_OPEN   # cached from joint_states
 
-        # Table geometry (updated per execute_grasp command)
+        # Table geometry (updated per execute_pregrasp/execute_descent command)
         self.table_surface_z  = 0.25
         self.table_thickness  = 0.05
         self._grasp_target_x  = 0.50           # used to centre table collision box
@@ -148,10 +148,9 @@ class LocobotMotionNode:
             "open_gripper":      self._handle_open_gripper,
             "close_gripper":     self._handle_close_gripper,
             "get_gripper_state": self._handle_get_gripper_state,
-            # Two-phase grasp: each phase verifies what it achieved before handing off.  execute_grasp runs both back to back (legacy).
+            # Two-phase grasp: each phase verifies what it achieved before handing off.
             "execute_pregrasp":  self._handle_execute_pregrasp,
             "execute_descent":   self._handle_execute_descent,
-            "execute_grasp":     self._handle_execute_grasp,
             "place":             self._handle_place,
         }
 
@@ -480,24 +479,10 @@ class LocobotMotionNode:
         ok, info = self._do_descent(obj_base, cmd.get("dims_hwl"))
         self._grasp_outcome(ok, pg.get("gw_before", self.gripper_position), info)
 
-    def _handle_execute_grasp(self, cmd: dict):
-        """Legacy single-shot command: both phases back to back, no decision point.
-        Kept for direct-command callers that don't need the two-phase split.
-        """
-        setup = self._setup_grasp(cmd)
-        if setup is None:
-            return
-        ok, info = self._do_pregrasp(setup["pos_base"], setup["dims_hwl"],
-                                     setup["angle_rad"], setup["grasp_axis"],
-                                     setup["waist_for_target"], setup["ready_pose"])
-        if ok:
-            ok, info = self._do_descent()
-        self._grasp_outcome(ok, setup["gw_before"], info)
-
     def _handle_place(self, cmd: dict):
         """Lower the held object straight down at (x, y) and release it.
-        Called right after execute_grasp, while the arm holds the object at the
-        retreat height straight above the grasp point.  Because the place point
+        Called right after execute_descent succeeds, while the arm holds the
+        object at the retreat height straight above the grasp point.  Because the place point
         is the grasp point, NO pre-place swing is needed: we just descend the
         same vertical line (constant EE orientation, no twist) and open.
         RELEASE IS THE PRIORITY.  A partial or failed descent must NOT skip the
