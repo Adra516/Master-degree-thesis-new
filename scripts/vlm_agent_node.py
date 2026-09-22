@@ -668,7 +668,14 @@ class VLMAgentNode:
             # Back up, then CONFIRM it worked. 
             rospy.logwarn("[agent] Positioned TOO CLOSE (%.2fm) — backing up", dist)
             for _ in range(2):
-                _drive(grasp_dist - dist)
+                # BUG FIX (2026-09-22): was `grasp_dist - dist`, which is POSITIVE
+                # whenever dist < grasp_dist — i.e. exactly the case this branch
+                # exists for — and _drive() treats positive as FORWARD. That drove
+                # the robot further INTO the object it was meant to be backing away
+                # from. `dist - grasp_dist` is negative here, matching the correct
+                # sign convention already used one branch over (STEP 1's `_drive
+                # (dist - grasp_dist)`, line ~643) and actually backs up.
+                _drive(dist - grasp_dist)
                 tx, ty, err = _measure_xy()
                 if err:
                     return err
