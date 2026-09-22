@@ -13,7 +13,6 @@
 
     Optional overrides:
       vision_target_object:=cup
-      vlm_process_rate:=0.5
   -->
   <!-- Grasp-fix plugin (external_urdf_loc) and the forearm_roll gain override are
        applied inside locobot.launch itself, so they are active for BOTH this

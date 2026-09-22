@@ -42,7 +42,6 @@
 
   <arg name="use_vision_nodes"                  default="false"/>
   <arg name="vision_target_object"              default="target_object"/>
-  <arg name="vlm_process_rate"                  default="1.0"/>
   <arg name="yolo_process_rate"                 default="5.0"/>
   <arg name="yolo_model"                        default="yolov8n.pt"/>
   <arg name="vlm_model"                         default="qwen3-vl:2b-instruct"/>

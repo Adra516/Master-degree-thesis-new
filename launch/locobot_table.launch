@@ -11,7 +11,6 @@
     Optional overrides (same as locobot.launch):
       vision_target_object:=cup
       yolo_target_classes:="['cup','bottle']"
-      vlm_process_rate:=0.5
   -->
   <include file="$(find locobot_prog)/launch/locobot.launch">
     <!-- Select the table world by passing world_name directly -->
