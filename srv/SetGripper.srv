@@ -1,0 +1,6 @@
+# Open or close the gripper fully.
+bool open
+---
+bool success
+float64 finger_position    # measured left_finger joint position after the move (m)
+string message

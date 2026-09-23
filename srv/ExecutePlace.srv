@@ -1,0 +1,8 @@
+# Lower the held object at place_point and release it. Always opens the
+# gripper, even if the arm only got part of the way down: releasing matters
+# more than a perfect placement.
+geometry_msgs/Point place_point  # z is ignored when at_grasp_height is true
+bool at_grasp_height             # put it down at the height it was picked up at
+---
+bool success
+string message

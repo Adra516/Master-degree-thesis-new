@@ -1,0 +1,16 @@
+# PHASE 1 of a grasp. Add every object to the collision scene — the target
+# included — raise the arm, open the gripper, move to the standoff in front of
+# the object and verify (forward kinematics) that the arm actually got there.
+#
+# On success the arm HOLDS at the standoff with the scene intact, waiting for
+# ExecuteGrasp. On failure the scene is torn down and the arm retracts, so the
+# caller can re-position the base and try again.
+GraspPlan plan
+CollisionBox[] obstacles        # table and neighbouring objects; kept for the whole grasp
+CollisionBox target_box         # the target itself; removed before the final approach
+float64 table_z                 # table surface height (m)
+---
+bool success                    # true = pre-grasp pose verified
+float64 position_error          # m, actual vs commanded; NaN = not measured
+float64 orientation_error       # rad; NaN = not measured
+string message

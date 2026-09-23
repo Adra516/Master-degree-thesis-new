@@ -1,0 +1,4 @@
+# Where the fingers are, and whether they are holding something.
+---
+float64 finger_position    # left_finger joint position (m); the jaw gap is twice this
+bool holding                # the fingers stopped short of the last close target

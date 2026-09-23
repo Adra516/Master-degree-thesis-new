@@ -1,0 +1,19 @@
+# PHASE 2 of a grasp. Needs a verified pre-grasp. Remove the target from the
+# collision scene, move straight in, check the open jaws straddle the object,
+# close, attach it and lift straight up.
+#
+# `plan` is the CURRENT best plan: if the object's dimensions were refined since
+# the pre-grasp, its grasp_point.z may differ and the straight-in move ends at
+# the corrected height. Its x, y must match the pre-grasp's (within 2 cm).
+GraspPlan plan
+geometry_msgs/Point object_now  # object position now (the camera is occluded here)
+bool object_now_valid           # false = unknown; the contact check then passes
+---
+bool success
+bool verified                   # contact check passed (false = jaws not centred; did not close)
+bool descended                  # the jaws moved in around the object
+bool straddled
+float64 along_jaw               # m, object offset along the closing axis; NaN = not measured
+float64 in_plane_miss           # m, offset along the approach axis; NaN = not measured
+float64 gripper_width           # measured left_finger position after the attempt (m)
+string message

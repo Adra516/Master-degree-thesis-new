@@ -10,8 +10,22 @@ GRIP_FRAC       = 0.50   # grip point as a fraction of object height (mid-body)
 GRIP_Z_FLOOR    = 0.06   # lowest height above the table the jaws safely reach
 GRIP_TOP_MARGIN = 0.018  # keep the jaws this far below the object's top edge
 GRIP_Z_CEILING  = 0.085
-# Height used when dims are unknown: middle of the proven band.  
+# Height used when dims are unknown: middle of the proven band.
 GRIP_Z_UNKNOWN  = 0.08
+
+# Per-finger joint positions (m); right_finger mirrors left_finger. The URDF
+# limits left_finger to [0.015, 0.037], so the jaws open 30-74 mm. FINGER_CLOSE
+# is deliberately below that minimum: the controller clamps it, so "close"
+# always means fully closed.
+# NOTE: locobot_motion_node.py still has its own GRIPPER_OPEN/GRIPPER_CLOSE at
+# these exact values — a deliberate, temporary duplication (see arm_node.py's
+# module docstring) until that node is retired; not a drift risk since both
+# are the same URDF-derived numbers, not independently tuned.
+FINGER_OPEN  = 0.037
+FINGER_CLOSE = 0.010
+# Assumed object size [H, W, L] when nothing was measured — only ever used to
+# size collision boxes, never to choose a grip.
+UNKNOWN_OBJECT_DIMS = (0.15, 0.06, 0.06)
 
 
 class ObjectTooShortForSideGrasp(ValueError):
@@ -272,3 +286,140 @@ def obstacle_boxes(detections, target_name, table_z, pad=0.02):
                       "z": table_z + h / 2.0,
                       "sx": foot, "sy": foot, "sz": h + 2 * pad})
     return boxes
+
+
+# ── Gripper widths ───────────────────────────────────────────────────────────
+# Added for arm_node.py (ported from locobot_motion_node._gripper_span_for /
+# _gripper_target_close, same numbers, now plain functions instead of methods
+# so arm_node's caller can build a full GraspPlan without a motion-node
+# instance).  locobot_motion_node.py keeps its own copies for now — see the
+# FINGER_OPEN/FINGER_CLOSE note above.
+
+def gripper_span_for(dims_hwl, grasp_axis, open_clearance=0.022, grip_squeeze=0.018):
+    """Per-finger OPEN and CLOSE positions adapted to the object size.
+
+    The gripper is antagonistic: the left_finger joint position (metres) is the
+    finger's displacement from centre and the right_finger mirrors it, so the
+    object's half-width maps directly to the finger position needed to touch
+    it. Sizing both motions off the measured object makes the same code grasp a
+    thin bottle or a wide box — only the numbers change.
+
+    dims_hwl      : [H, W, L] camera-measured object dimensions in metres.
+    grasp_axis    : "along_x" -> fingers close across W (dims_hwl[1]),
+                    "along_y" -> fingers close across L (dims_hwl[2]).
+    open_clearance: extra gap per side on approach so the jaws pass around the
+                    object without clipping it.
+    grip_squeeze  : how far past the object surface (per side) to command on
+                    close, so the effort controller loads onto the object.
+    Returns (open_pos, close_pos), both clipped to the mechanical range.
+    Falls back to full open / full close when dimensions are unknown.
+    """
+    if dims_hwl is None:
+        return FINGER_OPEN, FINGER_CLOSE
+    narrow_m = float(dims_hwl[1] if grasp_axis == "along_x" else dims_hwl[2])
+    half = narrow_m / 2.0                          # finger displacement at contact
+    open_pos = float(np.clip(half + open_clearance, FINGER_CLOSE + 0.008, FINGER_OPEN))
+    close_pos = float(np.clip(half - grip_squeeze, FINGER_CLOSE, FINGER_OPEN - 0.005))
+    return open_pos, close_pos
+
+
+def gripper_close_target(dims_hwl, grasp_axis, squeeze=0.006):
+    """Per-finger close target — CONDITIONAL on the object's shape.
+
+    TAPERED or unknown width (tall slender bottle): FULL close. Its width at the
+    grip height is not measured — the bbox width is the wide body — so a
+    body-sized target would stop the fingers in mid-air at the narrower grip
+    point (no contact, no weld). Closing fully lets them reach whatever
+    cross-section is there; the gentle vendor gain (p=100) plus the weld hold
+    it without shoving.
+
+    PRISMATIC with a trustworthy measured width (can, box): ADAPTIVE close to
+    just inside the surface. A full close on a uniform object slams shut, so the
+    first finger shoves the object sideways before the second lands; stopping a
+    few mm inside the surface lets the jaws meet it together and self-centre.
+    `squeeze` is the tuned 6 mm reach-through of the bbox width over-estimate,
+    not a force knob.
+    """
+    if is_tapered(dims_hwl, grasp_axis):
+        return FINGER_CLOSE
+    _, close_pos = gripper_span_for(dims_hwl, grasp_axis, grip_squeeze=squeeze)
+    return close_pos
+
+
+# ── Collision boxes for the two-phase grasp ──────────────────────────────────
+# Added for arm_node.py — the same box math ported from locobot_motion_node's
+# _add_target_obstacle/_add_table_collision, as plain functions returning the
+# same dict shape obstacle_boxes() already uses (name, x, y, z, sx, sy, sz).
+
+def target_box(target_xy, dims_hwl, table_z):
+    """The TARGET as a collision box for the pre-grasp phase: the arm avoids it
+    while approaching, then it is removed before the straight-in move. Lightly
+    padded (we deliberately approach it), square footprint (yaw unknown), body
+    resting on the table. The pad is shared with min_standoff_offset, which
+    sizes the closest the standoff may ever sit to this box."""
+    h, w, l = dims_hwl if dims_hwl is not None else UNKNOWN_OBJECT_DIMS
+    foot = max(float(w), float(l)) + 2 * TARGET_BOX_PAD
+    return {"name": "target_obstacle",
+            "x": float(target_xy[0]), "y": float(target_xy[1]),
+            "z": table_z + float(h) / 2.0,
+            "sx": foot, "sy": foot, "sz": float(h) + 2 * TARGET_BOX_PAD}
+
+
+def table_box(table_z, width, depth, near_x, target_x, thickness=0.05, padding=0.02):
+    """The table as a collision box, `padding` above the real surface.
+
+    With a measured near edge (in front of the robot, > 5 cm) the box's near
+    face sits ON that edge, so arm links passing over the edge do not collide
+    with it. Otherwise it is centred on the target's x (can clip the elbow; a
+    fallback only). Minimum size floors: a wide, deep box is safer than a
+    narrow wrong one.
+    """
+    if near_x is not None and float(near_x) > 0.05:
+        cx = float(near_x) + depth / 2.0
+    else:
+        cx = float(target_x)
+    thick = thickness + padding
+    return {"name": "table", "x": cx, "y": 0.0,
+            "z": table_z + padding - thick / 2.0,    # top face at table_z + padding
+            "sx": max(depth, 0.50), "sy": max(width, 1.00), "sz": thick}
+
+
+# ── The baseline plan ────────────────────────────────────────────────────────
+# Added for arm_node.py: packages grasp_pose/pregrasp_pose/gripper sizing into
+# one dict — the fields of locobot_prog/GraspPlan — so a caller can hand the
+# arm a complete, self-contained plan instead of raw position+dims.  This is
+# THE plan the pipeline has always executed; a caller with a better estimate
+# (e.g. from real depth data) may build and pass a different one instead — the
+# arm executes whatever GraspPlan it is given and derives no geometry itself.
+
+def baseline_plan(target_xy, dims_hwl, grasp_axis, table_z):
+    """The grasp the pipeline has always executed, as one plan: level gripper
+    facing the object's centre, grip height from grasp_height_above_table,
+    gripper widths from the measured bbox.
+
+    Returns a plain dict (the fields of locobot_prog/GraspPlan). When no side
+    grasp exists the plan is returned with valid=False and the reason, rather
+    than raising, so callers can report it.
+    """
+    size = dims_hwl if dims_hwl is not None else UNKNOWN_OBJECT_DIMS
+    plan = {
+        "valid": True, "reason": "baseline: bbox centre, bearing yaw",
+        "standoff_offset": PREGRASP_STANDOFF_OFFSET,
+        "standoff_offset_min": min_standoff_offset(dims_hwl),
+        "full_close": is_tapered(dims_hwl, grasp_axis),
+        # x = depth extent (L), y = width (W), z = height (H)
+        "object_size": [float(size[2]), float(size[1]), float(size[0])],
+    }
+    try:
+        xyz, quat = grasp_pose(target_xy, dims_hwl, table_z)
+    except ObjectTooShortForSideGrasp as e:
+        plan.update(valid=False, reason=f"Object too short for a side grasp: {e}",
+                    grasp_point=[float(target_xy[0]), float(target_xy[1]), table_z],
+                    grasp_orientation=[0.0, 0.0, 0.0, 1.0],
+                    gripper_open=FINGER_OPEN, gripper_close=FINGER_CLOSE)
+        return plan
+    plan.update(grasp_point=[float(v) for v in xyz],
+                grasp_orientation=[float(v) for v in quat],
+                gripper_open=gripper_span_for(dims_hwl, grasp_axis)[0],
+                gripper_close=gripper_close_target(dims_hwl, grasp_axis))
+    return plan

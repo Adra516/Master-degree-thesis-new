@@ -11,6 +11,8 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   rospy
   std_msgs
+  geometry_msgs
+  message_generation
 )
 
 ## System dependencies are found with CMake's conventions
@@ -47,31 +49,34 @@ find_package(catkin REQUIRED COMPONENTS
 ##   * add every package in MSG_DEP_SET to generate_messages(DEPENDENCIES ...)
 
 ## Generate messages in the 'msg' folder
-# add_message_files(
-#   FILES
-#   Message1.msg
-#   Message2.msg
-# )
+add_message_files(
+  FILES
+  GraspPlan.msg
+  CollisionBox.msg
+)
 
 ## Generate services in the 'srv' folder
-# add_service_files(
-#   FILES
-#   Service1.srv
-#   Service2.srv
-# )
-
-## Generate actions in the 'action' folder
-# add_action_files(
-#   FILES
-#   Action1.action
-#   Action2.action
-# )
+# arm_node's typed service contract (RAM-conscious node split, step 3 of the
+# fancy-shimmying-grove plan). One .srv per action, replacing the JSON-over-
+# topic dispatch locobot_motion_node.py still uses — that node is untouched
+# and still runs standalone; this is an ADDITIONAL, independently-testable
+# node, not a replacement, until a later step wires the agent to it.
+add_service_files(
+  FILES
+  SetArmPose.srv
+  SetGripper.srv
+  GetGripperState.srv
+  ExecutePregrasp.srv
+  ExecuteGrasp.srv
+  ExecutePlace.srv
+)
 
 ## Generate added messages and services with any dependencies listed here
-# generate_messages(
-#   DEPENDENCIES
-#   std_msgs
-# )
+generate_messages(
+  DEPENDENCIES
+  std_msgs
+  geometry_msgs
+)
 
 ################################################
 ## Declare ROS dynamic reconfigure parameters ##
@@ -105,7 +110,7 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES locobot_prog
-#  CATKIN_DEPENDS roscpp rospy std_msgs
+  CATKIN_DEPENDS roscpp rospy std_msgs geometry_msgs message_runtime
 #  DEPENDS system_lib
 )
 
@@ -171,6 +176,7 @@ catkin_install_python(PROGRAMS
   scripts/yolo_detection_node.py
   scripts/locobot_motion_node.py
   scripts/set_camera_angle.py
+  scripts/arm_node.py
   #scripts/set_arm_position.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

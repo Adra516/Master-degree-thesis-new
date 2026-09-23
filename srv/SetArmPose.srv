@@ -1,0 +1,6 @@
+# Move the arm to a named joint configuration (camera_clear, grasp_ready,
+# lift). Joint-space move, no collision check.
+string pose_name
+---
+bool success
+string message
