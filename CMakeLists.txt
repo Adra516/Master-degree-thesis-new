@@ -199,6 +199,7 @@ catkin_install_python(PROGRAMS
   scripts/navigation_node.py
   scripts/world_model_node.py
   scripts/detection_shim.py
+  scripts/task_agent_node.py
   #scripts/set_arm_position.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
