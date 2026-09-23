@@ -26,6 +26,8 @@ gets the refined yaw, not the raw one.
   /locobot/locobot_prog/detections      (DetectionArray) -> world_model_node
 """
 import json
+import os
+import sys
 
 import cv2
 import numpy as np
@@ -34,6 +36,10 @@ from cv_bridge import CvBridge, CvBridgeError
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
+# See arm_node.py's identical comment: roslaunch execs this file through a
+# devel/lib/ wrapper, so __file__'s own directory must be added explicitly
+# for the flat sibling imports below to resolve.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from conversions import detection_to_msg
 from locobot_geometry import estimate_grasp_orientation
 from locobot_prog.msg import DetectionArray

@@ -28,6 +28,7 @@ subscriptions, and a second PlanningSceneInterface can race this one on
 collision-object diffs — this node adds and removes the target mid-grasp, so a
 competing diff would make the two-phase collision semantics nondeterministic.
 """
+import os
 import sys
 import threading
 
@@ -38,6 +39,15 @@ import tf2_ros
 from moveit_commander import PlanningSceneInterface
 from moveit_msgs.msg import MoveGroupAction
 
+# roslaunch execs this file's source through a tiny generated wrapper in
+# devel/lib/, so __file__'s directory (not Python's own auto-prepended
+# sys.path[0], which points at the WRAPPER's directory in that case) must be
+# added explicitly for the flat sibling imports below to resolve. Same
+# pattern already used by locobot_motion_node.py/vlm_agent_node.py — missing
+# here caused a real ModuleNotFoundError under `roslaunch` (never surfaced by
+# direct `python3 arm_node.py` testing, where the auto-prepend happens to
+# already be correct).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from arm_actuators import ARM_POSES, CAMERA_CLEAR_POSE, ArmActuator, Gripper
 from arm_diagnostics import GraspDiagnostics
 from collision_scene import CollisionScene

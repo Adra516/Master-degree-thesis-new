@@ -25,6 +25,8 @@ built service graph, not a bug: locobot_motion_node.py is still the complete,
 working, live production path regardless.
 """
 import math
+import os
+import sys
 import threading
 
 import numpy as np
@@ -32,6 +34,10 @@ import rospy
 import tf2_ros
 from sensor_msgs.msg import LaserScan
 
+# See arm_node.py's identical comment: roslaunch execs this file through a
+# devel/lib/ wrapper, so __file__'s own directory must be added explicitly
+# for the flat sibling imports below to resolve.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import approach
 from base_controller import BaseController
 from locobot_prog.srv import (ApproachTarget, ApproachTargetResponse, DriveRelative,

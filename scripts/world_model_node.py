@@ -37,7 +37,9 @@ Try either half with nothing else running:
   rosservice call /locobot/task/get_object "target_name: 'bottle'"
 """
 import math
+import os
 import statistics
+import sys
 import threading
 import time
 
@@ -51,6 +53,10 @@ from geometry_msgs.msg import Point, PoseStamped, Vector3, PointStamped
 from moveit_msgs.srv import GetPositionIK, GetPositionIKRequest
 from sensor_msgs.msg import CameraInfo, Image, JointState
 
+# See arm_node.py's identical comment: roslaunch execs this file through a
+# devel/lib/ wrapper, so __file__'s own directory must be added explicitly
+# for the flat sibling imports below to resolve.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import grasp_geometry as gg
 import reach
 import world_bev
