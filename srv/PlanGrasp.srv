@@ -1,0 +1,28 @@
+# Where exactly the jaws close, planned from the depth image. Metres, radians,
+# seconds, <robot_name>/base_link.
+#
+# NOTE: this TYPE exists so task_orchestrator's optional shadow-planner
+# integration imports cleanly, but no server implements it — grasp_planner_node
+# was deliberately not adopted (see step 3's commit message: its useful part,
+# depth-based contact-point selection, wasn't folded in anywhere either, since
+# arm_node's own design principle is "derives no geometry of its own" and this
+# planning belongs to whichever node builds the GraspPlan — deferred). The
+# orchestrator's own wait_for_service(..., timeout=5.0) at startup already
+# handles this gracefully: shadow comparison is silently off, everything else
+# runs exactly as if this service never existed.
+float64[4] bbox                  # the target's detection box, PIXELS [x1, y1, x2, y2]
+time stamp                       # the camera frame the box was detected in
+geometry_msgs/Point position     # the world model's estimate of the target's centre
+geometry_msgs/Vector3 size       # x = depth, y = width, z = height; all 0 = unknown
+float64 table_z                  # table surface height
+float64 max_axis_deviation       # how far the closing axis may turn from across-the-approach
+---
+bool planned                     # false = no plan, keep the baseline (reason says why)
+string reason
+GraspPlan plan
+geometry_msgs/Point contact_left
+geometry_msgs/Point contact_right
+float64 width                    # the object's width across the jaws at the grip height
+float64 seat_turn                # how far the object will turn in the closing jaws
+int32 points                     # depth points on the target
+float64 frame_offset             # seconds between the requested stamp and the depth frame used

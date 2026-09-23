@@ -1,0 +1,54 @@
+# Object catalogue: which detector labels can be the object the user names.
+#
+# Replaces the hardcoded _ALIAS_MAP in yolo_detection_node.py (that node is
+# untouched; the catalogue is consumed by detection_shim.py/world_model.py,
+# which decide target identity independently). Adding an object means adding
+# an entry here, not editing code.
+#
+#   names        what a user (or the VLM) may call it; matched case-insensitively,
+#                spaces/underscores ignored. The key itself always counts.
+#   yolo_labels  COCO labels the detector has been MEASURED to report for it in
+#                this world (see yolo_class_probe.py and this project's memory).
+#                Only measured labels belong here: a guessed label silently
+#                steals detections from whatever else carries it.
+#   size         real size, metres: x = depth, y = width, z = height. Used only
+#                to break ties when several detections could be the target
+#                (CatalogResolver.plausibility) — this is the piece that
+#                _ALIAS_MAP could not do: when two DIFFERENT physical objects
+#                get labelled the same wrong class, the one whose measured size
+#                actually matches the catalogue wins instead of racing on
+#                whichever frame arrived first.
+#   role         "surface" = not something to pick; feeds the table model.
+#
+# Units: metres. Verified against the CURRENT _ALIAS_MAP in
+# yolo_detection_node.py before writing (same 4 objects, same measured labels).
+version: 1
+
+objects:
+  bottle:
+    names: [bottle, beer bottle, beer]
+    yolo_labels: [bottle, vase]
+    size: {x: 0.062, y: 0.062, z: 0.23}
+
+  tea_box:
+    names: [tea box, teabox, tea]
+    yolo_labels: [remote]
+    size: {x: 0.06, y: 0.06, z: 0.09}
+
+  can_coke:
+    names: [coke can, cancoke, coke, can, soda can]
+    yolo_labels: [cell phone]
+    size: {x: 0.055, y: 0.055, z: 0.096}
+
+  ball:
+    # 70 mm tall: too short for any side grasp (the grip-height rule rejects it
+    # before the arm moves). Listed so it can be recognised and avoided.
+    names: [ball, sports ball]
+    yolo_labels: [sports ball]
+    size: {x: 0.07, y: 0.07, z: 0.07}
+
+  table:
+    role: surface
+    names: [table, dining table]
+    yolo_labels: [dining table]
+    size: {x: 0.40, y: 0.80, z: 0.25}

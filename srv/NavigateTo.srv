@@ -1,0 +1,12 @@
+# Drive the base to the grasp standoff in front of the named object, without
+# grasping. The VLM's navigate_to tool.
+string target_name
+---
+bool success
+float64 distance          # final measured distance to the object (m)
+string zone
+string scene_summary
+string description
+string[] visible_objects
+bool attach_camera_frame
+sensor_msgs/Image bev

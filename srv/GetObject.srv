@@ -1,0 +1,14 @@
+# Pick up the named object and put it back down: observe, navigate, grasp,
+# lift, place. The VLM's get_object tool. Plain-language fields end up in the
+# JSON the VLM reads.
+string target_name
+---
+bool success
+float64 gripper_width     # m, measured after the grasp
+string zone
+string scene_summary
+string phase              # where it stopped: positioning | pregrasp | descent
+string description
+string[] visible_objects
+bool attach_camera_frame  # show the VLM the current camera image too
+sensor_msgs/Image bev     # the bird's-eye view; empty when not produced

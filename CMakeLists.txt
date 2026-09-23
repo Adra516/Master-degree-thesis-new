@@ -57,6 +57,8 @@ add_message_files(
   WorldObject.msg
   TableModel.msg
   TargetState.msg
+  Detection3D.msg
+  DetectionArray.msg
 )
 
 ## Generate services in the 'srv' folder
@@ -66,8 +68,9 @@ add_message_files(
 # replacement, until a later step wires the agent to them.
 #   SetArmPose..ExecutePlace : arm_node (step 3)
 #   DriveRelative/ApproachTarget : navigation_node (step 4)
-#   GetScene/GetTarget : TYPE contract only for now — world_model_node, the
-#     server that implements them, is a later step (see GetScene.srv's note)
+#   GetScene/GetTarget/TargetMemory : world_model_node (step 5)
+#   GetObject/NavigateTo : task_orchestrator half of world_model_node (step 5)
+#   PlanGrasp : TYPE contract only — no server implements it (see its own note)
 add_service_files(
   FILES
   SetArmPose.srv
@@ -80,6 +83,10 @@ add_service_files(
   ApproachTarget.srv
   GetScene.srv
   GetTarget.srv
+  TargetMemory.srv
+  GetObject.srv
+  NavigateTo.srv
+  PlanGrasp.srv
 )
 
 ## Generate added messages and services with any dependencies listed here
@@ -190,6 +197,8 @@ catkin_install_python(PROGRAMS
   scripts/set_camera_angle.py
   scripts/arm_node.py
   scripts/navigation_node.py
+  scripts/world_model_node.py
+  scripts/detection_shim.py
   #scripts/set_arm_position.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
@@ -230,6 +239,11 @@ install(DIRECTORY launch/
 
 install(DIRECTORY rviz/
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/rviz
+)
+
+install(DIRECTORY config/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config
+  FILES_MATCHING PATTERN "*.yaml"
 )
 
 install(DIRECTORY worlds/

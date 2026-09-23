@@ -1,0 +1,9 @@
+# The target's position held in odometry, for moments the camera cannot see it
+# (the arm occludes it at grasp height).
+uint8 MEASURE=1           # remember where it is now (the robot must be still)
+uint8 REPROJECT=2         # where the remembered point is now, in base_link
+uint8 FORGET=3            # drop the target lock (after a successful grasp)
+uint8 action
+---
+bool ok
+geometry_msgs/Point position
