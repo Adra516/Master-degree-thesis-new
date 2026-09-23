@@ -69,7 +69,7 @@ add_message_files(
 #   DriveRelative/ApproachTarget : navigation_node
 #   GetScene/GetTarget/TargetMemory : world_model_node
 #   GetObject/NavigateTo : task_orchestrator half of world_model_node
-#   PlanGrasp : TYPE contract only — no server implements it (see its own note)
+#   PlanGrasp : world_model_node's ~plan_grasp (the depth-image grasp planner)
 add_service_files(
   FILES
   SetArmPose.srv

@@ -36,6 +36,7 @@ Try either half with nothing else running:
   rosservice call /locobot/world_model/get_scene "{target_name: 'tea box', include_bev: false}"
   rosservice call /locobot/task/get_object "target_name: 'bottle'"
 """
+import collections
 import math
 import os
 import statistics
@@ -57,8 +58,11 @@ from sensor_msgs.msg import CameraInfo, Image, JointState
 # devel/lib/ wrapper, so __file__'s own directory must be added explicitly
 # for the flat sibling imports below to resolve.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import footprint
 import grasp_geometry as gg
+import grasp_planner as gp
 import reach
+import rotations
 import world_bev
 from conversions import (box_to_msg, detection_from_msg, dims_hwl_from_size,
                          plan_to_msg, size_from_dims_hwl, table_to_msg,
@@ -75,7 +79,7 @@ from locobot_prog.srv import (ApproachTarget, ApproachTargetRequest,
                               ExecutePregrasp, GetObject, GetObjectResponse,
                               GetScene, GetSceneResponse, GetTarget,
                               GetTargetResponse, NavigateTo, NavigateToResponse,
-                              PlanGrasp, SetArmPose, TargetMemory,
+                              PlanGrasp, PlanGraspResponse, SetArmPose, TargetMemory,
                               TargetMemoryRequest, TargetMemoryResponse)
 
 # The grasp point trusts a target lock at most this old (positioning uses 2 s):
@@ -96,6 +100,7 @@ class WorldModelNode:
                                 rospy.get_param("~target_object", "bottle"))
         self._lock = threading.Lock()        # detection callback vs service threads
         self.K = None
+        self.camera_frame = None             # camera optical frame, from camera_info
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
@@ -104,14 +109,32 @@ class WorldModelNode:
         self._frame_stamp = rospy.Time()     # camera stamp of model.latest
         self.bridge = CvBridge()
 
+        # Recent depth frames, for ~plan_grasp: a detection's bbox/stamp lags its
+        # source image (YOLO on the CPU, ~1.1s), so the depth frame it belongs to
+        # is found by nearest stamp, not "whatever's latest" — same as
+        # rework-attempt-1's grasp_planner_node. Raw Image messages only (decoded
+        # lazily, once, for whichever single frame a plan actually uses); at this
+        # launch's 320x240 depth resolution ~150KB/frame, so 3s at 10Hz (the old
+        # node's own sizing) is ~4.6MB — negligible next to this process's RSS,
+        # and cv2/numpy are already loaded here via world_bev.py/cv_bridge.
+        self._depth_lock = threading.Lock()  # separate from self._lock: different
+                                             # rospy callback thread than detections
+        self._depth_frame_step = float(rospy.get_param("~grasp_depth_frame_step_s", 0.1))
+        buffer_s = float(rospy.get_param("~grasp_depth_buffer_s", 3.0))
+        self._depth_frames = collections.deque(maxlen=int(buffer_s / self._depth_frame_step) + 1)
+        self._plan_max_frame_offset = float(rospy.get_param("~grasp_plan_max_frame_offset", 0.25))
+
         self.bev_pub = rospy.Publisher("~bev_image", Image, queue_size=1, latch=True)
         rospy.Subscriber(f"/{ns}/locobot_prog/detections", DetectionArray,
                          self._on_detections, queue_size=1)
         rospy.Subscriber(f"/{ns}/camera/color/camera_info", CameraInfo,
                          self._on_camera_info, queue_size=1)
+        rospy.Subscriber(f"/{ns}/camera/aligned_depth_to_color/image_raw", Image,
+                         self._on_depth, queue_size=2, buff_size=2 ** 24)
         rospy.Service("~get_scene", GetScene, self._get_scene)
         rospy.Service("~get_target", GetTarget, self._get_target)
         rospy.Service("~target_memory", TargetMemory, self._target_memory)
+        rospy.Service("~plan_grasp", PlanGrasp, self._handle_plan_grasp)
         rospy.Timer(rospy.Duration(1.0), self._publish_live_bev)
         rospy.loginfo("[world] Ready. Tracking '%s'; catalogue: %s",
                       self.model.target_name, ", ".join(self.catalog.objects))
@@ -121,6 +144,93 @@ class WorldModelNode:
     def _on_camera_info(self, msg):
         if self.K is None:
             self.K = np.array(msg.K, dtype=np.float64).reshape(3, 3)
+            self.camera_frame = msg.header.frame_id
+
+    def _on_depth(self, msg):
+        """Buffer raw depth frames, throttled, for ~plan_grasp's nearest-stamp
+        lookup. Ported from rework-attempt-1's grasp_planner_node._on_depth."""
+        with self._depth_lock:
+            if self._depth_frames:
+                dt = (msg.header.stamp - self._depth_frames[-1].header.stamp).to_sec()
+                if dt < 0:                    # sim time went back (reset): start over
+                    self._depth_frames.clear()
+                elif dt < self._depth_frame_step:
+                    return
+            self._depth_frames.append(msg)
+
+    def _depth_frame_near(self, stamp):
+        """The buffered depth frame closest to `stamp`, and how far from it in
+        seconds; (None, inf) when empty."""
+        with self._depth_lock:
+            frames = list(self._depth_frames)
+        if not frames:
+            return None, math.inf
+        best = min(frames, key=lambda f: abs((f.header.stamp - stamp).to_sec()))
+        return best, abs((best.header.stamp - stamp).to_sec())
+
+    def _camera_to_base(self, header):
+        """4x4 transform from the depth frame to base_link AT THE FRAME'S STAMP
+        (a Time(0) lookup would use wherever the camera is now)."""
+        t = self.tf_buffer.lookup_transform(f"{self.ns}/base_link", header.frame_id,
+                                            header.stamp, rospy.Duration(0.3)).transform
+        q, p = t.rotation, t.translation
+        T = rotations.quaternion_matrix([q.x, q.y, q.z, q.w])
+        T[:3, 3] = [p.x, p.y, p.z]
+        return T
+
+    def _handle_plan_grasp(self, req):
+        try:
+            return self._plan_grasp(req)
+        except Exception as e:   # a planner fault must degrade to the baseline, not abort
+            rospy.logerr("[world] plan_grasp failed: %r", e)
+            return PlanGraspResponse(planned=False, reason=f"planner error: {e!r}")
+
+    def _plan_grasp(self, req):
+        res = PlanGraspResponse(planned=False)
+        frame, offset = self._depth_frame_near(req.stamp)
+        res.frame_offset = offset if math.isfinite(offset) else -1.0
+        if frame is None or self.K is None or self.camera_frame is None:
+            res.reason = "no depth frame or camera_info yet"
+            return res
+        if offset > self._plan_max_frame_offset:
+            res.reason = f"no depth frame within {self._plan_max_frame_offset:.2f}s of the detection"
+            return res
+        try:
+            T = self._camera_to_base(frame.header)
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException) as e:
+            res.reason = f"no camera pose at the frame's stamp: {e}"
+            return res
+
+        depth = self.bridge.imgmsg_to_cv2(frame, desired_encoding="passthrough")
+        depth = depth.astype(np.float32) / 1000.0 if depth.dtype == np.uint16 \
+            else depth.astype(np.float32)
+        s = req.size
+        dims = dims_hwl_from_size(s) if (s.x > 0 and s.y > 0 and s.z > 0) else None
+        centre = (req.position.x, req.position.y)
+        radius = gp.cut_radius(dims)
+        cloud = footprint.transform(footprint.backproject(depth, req.bbox, self.K), T)
+        pts = footprint.object_points(cloud, req.table_z, center_xy=centre, radius=radius)
+        bearing = math.atan2(centre[1], centre[0])
+        plan, diag = gp.plan_from_points(pts, req.table_z, bearing, dims,
+                                         max_dev=req.max_axis_deviation)
+        res.points = diag["points"]
+        if plan is None:
+            res.reason = diag["reason"]
+            rospy.loginfo("[world] plan_grasp: no plan (%d points): %s", res.points, res.reason)
+            return res
+        res.planned = True
+        res.reason = plan["reason"]
+        res.plan = plan_to_msg(plan)
+        res.contact_left = Point(*diag["contact_left"])
+        res.contact_right = Point(*diag["contact_right"])
+        res.width = diag["width"]
+        res.seat_turn = diag["turn"]
+        g = plan["grasp_point"]
+        rospy.loginfo("[world] plan_grasp: (%d points, frame %+.2fs) (%.3f, %.3f, %.3f) "
+                      "width %.0fmm turn %.0f°  %s", res.points, offset, g[0], g[1], g[2],
+                      res.width * 1000, math.degrees(res.seat_turn), res.reason)
+        return res
 
     def _on_detections(self, msg):
         dets = [detection_from_msg(d) for d in msg.detections]
@@ -284,6 +394,7 @@ class TaskOrchestrator:
         self.get_scene = proxy("world_model/get_scene", GetScene)
         self.get_target = proxy("world_model/get_target", GetTarget)
         self.target_memory = proxy("world_model/target_memory", TargetMemory)
+        self.plan_grasp = proxy("world_model/plan_grasp", PlanGrasp)
         self.approach = proxy("navigation/approach_target", ApproachTarget)
         self.set_arm_pose = proxy("arm/set_arm_pose", SetArmPose)
         self.execute_pregrasp = proxy("arm/execute_pregrasp", ExecutePregrasp)
@@ -302,19 +413,6 @@ class TaskOrchestrator:
         except rospy.ROSException:
             rospy.logwarn("[task] compute_ik unavailable — using fixed grasp_dist")
 
-        # The depth-image grasp planner, run in shadow (logged, not executed).
-        # Optional: without it the pick runs exactly as before. NOT adopted in
-        # this project (see PlanGrasp.srv's own note) — this always ends up
-        # None here, and _shadow_plan is a no-op. Kept rather than removed: the
-        # integration point is real (a future planner could still attach here),
-        # and the cost of leaving it is one unused wait_for_service at startup.
-        self._plan_grasp = None
-        try:
-            rospy.wait_for_service(f"/{ns}/grasp_planner/plan_grasp", timeout=5.0)
-            self._plan_grasp = rospy.ServiceProxy(f"/{ns}/grasp_planner/plan_grasp", PlanGrasp)
-            rospy.loginfo("[task] grasp planner available — shadow comparison on")
-        except rospy.ROSException:
-            rospy.loginfo("[task] grasp planner unavailable — shadow comparison off")
         self._ground_truth = None     # Gazebo, only when a diag model is named
 
         # ABSOLUTE names, not "~get_object"/"~navigate_to" — see this file's
@@ -450,19 +548,18 @@ class TaskOrchestrator:
         obstacles = list(self.get_scene(target_name=target_name).obstacles)
         table = box_to_msg(gg.table_box(tz, s.table.width or 0.80, s.table.depth or 0.40,
                                         ctx["grasp_table_near_x"], pos[0]))
-        self._shadow_plan(st, pos, dims, grasp_axis, tz)
-
-        def plan():
-            return plan_to_msg(gg.baseline_plan(pos, dims, grasp_axis, tz))
 
         def target_box():
             return box_to_msg(gg.target_box(pos, dims, tz))
 
         # 6. PRE-GRASP — measured, and refused from a bad pose. A failed one
         #    retracts the arm, so the base can be corrected and it can retry once.
+        # The plan is chosen once per attempt and reused for this attempt's
+        # execute_grasp call below — NOT recomputed there (see _choose_plan).
+        plan_msg = self._choose_plan(st, pos, dims, grasp_axis, tz)
         pre = None
         for attempt in (1, 2):
-            pre = self.execute_pregrasp(plan=plan(), obstacles=[table] + obstacles,
+            pre = self.execute_pregrasp(plan=plan_msg, obstacles=[table] + obstacles,
                                         target_box=target_box(), table_z=tz)
             if pre.success:
                 rospy.loginfo("[task] Pre-grasp verified (attempt %d): %s", attempt,
@@ -478,6 +575,11 @@ class TaskOrchestrator:
                 break
             pos = [round(r.target.x, 3), round(r.target.y, 3)]
             self.target_memory(action=TargetMemoryRequest.MEASURE)   # re-prime here
+            # Refresh st too: a corrected base pose means a new camera pose, so
+            # the depth plan's buffered frame/TF lookup must describe THIS pose,
+            # not the pre-correction one the original st still holds.
+            st = self.get_target(target_name=target_name).state
+            plan_msg = self._choose_plan(st, pos, dims, grasp_axis, tz)
             rospy.loginfo("[task] Re-positioned for pre-grasp retry: (%.3f, %.3f)", *pos)
         if not pre.success:
             return GetObjectResponse(
@@ -496,7 +598,7 @@ class TaskOrchestrator:
                           obj_now.x, obj_now.y)
         else:
             rospy.logwarn("[task] No odometry reprojection — contact check unverified")
-        g = self.execute_grasp(plan=plan(), object_now=obj_now or Point(),
+        g = self.execute_grasp(plan=plan_msg, object_now=obj_now or Point(),
                                object_now_valid=obj_now is not None)
         gw = g.gripper_width
 
@@ -545,59 +647,53 @@ class TaskOrchestrator:
         except rospy.ServiceException as e:
             return ApproachTargetResponse(success=False, message=f"Navigation failed: {e}")
 
-    # ── Grasp planner, in shadow ─────────────────────────────────────────────
+    # ── Grasp planning ───────────────────────────────────────────────────────
 
-    def _shadow_plan(self, st, pos, dims, grasp_axis, tz):
-        """Ask the depth-image grasp planner for its plan and LOG it next to the
-        baseline plan that is executed — and, in Gazebo, both against ground
-        truth. Measurement only: nothing here changes the grasp, and a planner
-        that is missing or fails only costs the log line."""
-        if self._plan_grasp is None:
-            return
-        if not st.in_frame:
-            rospy.loginfo("[task] SHADOW planner skipped: target not in the latest frame")
-            return
-        try:
-            r = self._plan_grasp(bbox=st.frame_bbox, stamp=st.frame_stamp,
-                                 position=Point(pos[0], pos[1], 0.0),
-                                 size=size_from_dims_hwl(dims) if dims else Vector3(),
-                                 table_z=tz, max_axis_deviation=0.0)
-        except rospy.ServiceException as e:
-            rospy.logwarn("[task] SHADOW planner call failed: %s", e)
-            return
-        b = gg.baseline_plan(pos, dims, grasp_axis, tz)
-        bp = b["grasp_point"]
-        rospy.loginfo("[task] SHADOW baseline: (%.3f, %.3f, %.3f) open %.1f close %.1f full=%s",
-                      bp[0], bp[1], bp[2], b["gripper_open"] * 1000,
-                      b["gripper_close"] * 1000, b["full_close"])
-        if not r.planned:
-            rospy.loginfo("[task] SHADOW planner: none (%s)", r.reason)
-            return
-        g = r.plan.grasp_point
-        rospy.loginfo("[task] SHADOW planner:  (%.3f, %.3f, %.3f) open %.1f close %.1f full=%s "
-                      "width %.1fmm turn %.0f°  d=(%+.1f, %+.1f, %+.1f)mm from baseline",
-                      g.x, g.y, g.z, r.plan.gripper_open * 1000, r.plan.gripper_close * 1000,
-                      r.plan.full_close, r.width * 1000, math.degrees(r.seat_turn),
-                      (g.x - bp[0]) * 1000, (g.y - bp[1]) * 1000, (g.z - bp[2]) * 1000)
+    def _choose_plan(self, st, pos, dims, grasp_axis, tz):
+        """The grasp to execute: the depth-image planner's measurement of this
+        specific object's real shape when it can support one, else the bbox-
+        centre baseline. Never worse than the baseline — a planner that is
+        unavailable, declines, or errors just falls back silently. Called once
+        per attempt and memoized by the caller: a second live measurement is
+        not guaranteed to reproduce the point the arm already positioned
+        itself relative to, and re-querying it for the descent would be both
+        physically wrong and liable to trip grasp_executor's drift guard on
+        measurement noise rather than a real problem."""
+        r = None
+        if st.in_frame:
+            try:
+                r = self.plan_grasp(bbox=st.frame_bbox, stamp=st.frame_stamp,
+                                    position=Point(pos[0], pos[1], 0.0),
+                                    size=size_from_dims_hwl(dims) if dims else Vector3(),
+                                    table_z=tz, max_axis_deviation=0.0)
+            except rospy.ServiceException as e:
+                rospy.logwarn("[task] Grasp planner call failed: %s — using baseline", e)
+        else:
+            rospy.loginfo("[task] Target not in the latest frame — using baseline")
+
+        if r is not None and r.planned:
+            rospy.loginfo("[task] Grasp plan from the DEPTH PLANNER: %s "
+                          "(width %.0fmm, turn %.0f°)", r.reason, r.width * 1000,
+                          math.degrees(r.seat_turn))
+            plan_msg, source = r.plan, "planner"
+        else:
+            if r is not None:
+                rospy.loginfo("[task] Depth planner declined (%s) — using baseline", r.reason)
+            plan_msg = plan_to_msg(gg.baseline_plan(pos, dims, grasp_axis, tz))
+            source = "baseline"
+
         model = rospy.get_param("~diag_object_model",
                                 rospy.get_param(f"/{self.ns}/arm/diag_object_model", ""))
-        if model and self._ground_truth is None:
-            self._ground_truth = GroundTruth(self.ns)
-        gt = self._ground_truth.object_in_base(model) if model else None
-        if gt is None:
-            return
-        # Error along the approach (radial: + = past the object) and across it.
-        bearing = math.atan2(gt[1], gt[0])
-
-        def err(x, y):
-            dx, dy = x - gt[0], y - gt[1]
-            return (math.hypot(dx, dy) * 1000,
-                    (dx * math.cos(bearing) + dy * math.sin(bearing)) * 1000,
-                    (-dx * math.sin(bearing) + dy * math.cos(bearing)) * 1000)
-
-        rospy.loginfo("[task] SHADOW vs GT '%s' (%.3f, %.3f): planner %.1fmm (radial %+.1f, "
-                      "lateral %+.1f)  baseline %.1fmm (radial %+.1f, lateral %+.1f)",
-                      model, gt[0], gt[1], *err(g.x, g.y), *err(bp[0], bp[1]))
+        if model:
+            if self._ground_truth is None:
+                self._ground_truth = GroundTruth(self.ns)
+            gt = self._ground_truth.object_in_base(model)
+            if gt is not None:
+                g = plan_msg.grasp_point
+                rospy.loginfo("[task] Grasp point (%s) vs GT '%s' (%.3f, %.3f): %.1fmm",
+                              source, model, gt[0], gt[1],
+                              math.hypot(g.x - gt[0], g.y - gt[1]) * 1000)
+        return plan_msg
 
     # ── Inverse reachability ─────────────────────────────────────────────────
 

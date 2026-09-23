@@ -1,15 +1,15 @@
 # Where exactly the jaws close, planned from the depth image. Metres, radians,
 # seconds, <robot_name>/base_link.
 #
-# NOTE: this TYPE exists so task_orchestrator's optional shadow-planner
-# integration imports cleanly, but no server implements it — grasp_planner_node
-# was deliberately not adopted (see step 3's commit message: its useful part,
-# depth-based contact-point selection, wasn't folded in anywhere either, since
-# arm_node's own design principle is "derives no geometry of its own" and this
-# planning belongs to whichever node builds the GraspPlan — deferred). The
-# orchestrator's own wait_for_service(..., timeout=5.0) at startup already
-# handles this gracefully: shadow comparison is silently off, everything else
-# runs exactly as if this service never existed.
+# Served by world_model_node's ~plan_grasp (grasp_planner.py + footprint.py,
+# ported from rework-attempt-1's standalone grasp_planner_node — folded in
+# here instead of as its own process, per the RAM lesson from that rework:
+# same capability, no extra process). task_orchestrator (the other half of
+# world_model_node) calls it once per pre-grasp attempt and falls back to
+# grasp_geometry.baseline_plan() when it declines — see
+# TaskOrchestrator._choose_plan. A caller with nothing behind this name yet
+# (startup ordering, or the service down) degrades the same way: the
+# baseline runs exactly as if this service didn't exist.
 float64[4] bbox                  # the target's detection box, PIXELS [x1, y1, x2, y2]
 time stamp                       # the camera frame the box was detected in
 geometry_msgs/Point position     # the world model's estimate of the target's centre
