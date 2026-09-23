@@ -2,16 +2,11 @@
 """task_agent_node — the VLM planning layer, thin.
 
 Ported near-verbatim from rework-attempt-1's scripts/vlm_agent_node.py.
-Named task_agent_node.py here, NOT vlm_agent_node.py: the current
-vlm_agent_node.py (1064 lines) is the live production entry point
-vision_nodes.launch actually starts, and this file is a wholesale behavioral
-replacement for it (all geometry/navigation/grasp logic now lives in
-world_model_node.py's TaskOrchestrator, reached through exactly two service
-calls), not an addition alongside it the way arm_node/navigation_node/
-world_model_node were. Landing it under the SAME filename would silently
-redirect what the launch file runs the moment someone re-launches — a real
-cutover, decided separately (a later step), not a side effect of writing this
-file. vlm_agent_node.py is completely untouched.
+This is now the ONLY agent node — it replaced the old, monolithic
+vlm_agent_node.py (1064 lines; retired, see git history) as vision_nodes.
+launch's live entry point. All the geometry/navigation/grasp logic that used
+to live inline in that file now lives in world_model_node.py's
+TaskOrchestrator, reached through exactly two service calls.
 
 The VLM (Ollama, qwen3-vl) is given the user's request and two tools, and
 decides what to call. Each tool is one service call to task_orchestrator (the

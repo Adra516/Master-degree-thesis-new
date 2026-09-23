@@ -2,11 +2,11 @@
 debugging (rqt_image_view on the world model's bev_image topic).
 
 Ported near-verbatim from rework-attempt-1's src/locobot_prog/world/bev.py,
-itself "moved from scripts/locobot_geometry.py" — verified identical to the
-current locobot_geometry.py's render_birdseye before porting. Named
-world_bev.py (not bev.py) to avoid ambiguity with unrelated names elsewhere.
-locobot_geometry.py's own copy is untouched — still used by the still-live
-vlm_agent_node.py. Pure: OpenCV and numpy, no ROS.
+itself "moved from scripts/locobot_geometry.py" — verified identical to
+locobot_geometry.py's render_birdseye before porting. Named world_bev.py (not
+bev.py) to avoid ambiguity with unrelated names elsewhere. locobot_geometry.
+py's own copy was deleted once its only caller, vlm_agent_node.py, was
+retired — this is its sole surviving copy. Pure: OpenCV and numpy, no ROS.
 """
 import math
 from typing import List, Optional, Tuple

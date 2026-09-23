@@ -3,12 +3,10 @@
 Ported from rework-attempt-1's src/locobot_prog/geometry/rotations.py, which
 existed there so the geometry layer imports with no ROS installed (`tf` is a
 ROS package). Kept here mainly for its one non-cosmetic function,
-world_to_body(): the ORIGINAL yaw-only ground-truth transform in
+world_to_body(): the ORIGINAL yaw-only ground-truth transform in the retired
 locobot_motion_node.py's _object_in_base put a point at grasp height ~12 mm
 off along the approach, because the robot rests pitched ~2 deg nose-down on
-its caster — a real, measured bug (fixed here, in arm_diagnostics.py; NOT
-touched in locobot_motion_node.py itself, which keeps its pre-existing
-yaw-only version).
+its caster — a real, measured bug, fixed here and used by arm_diagnostics.py.
 
 Same conventions as tf.transformations: quaternions are [x, y, z, w], Euler
 angles are static-frame x-y-z (tf's default 'sxyz'), and quaternion_matrix

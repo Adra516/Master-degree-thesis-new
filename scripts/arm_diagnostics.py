@@ -2,16 +2,14 @@
 between the open jaws, BEFORE closing them.
 
 Ported near-verbatim from rework-attempt-1's src/locobot_prog/arm/
-diagnostics.py, itself "moved verbatim from locobot_motion_node.py" — with
-ONE substantive change, carried over deliberately: _object_in_base uses
-rotations.world_to_body (full orientation) instead of a yaw-only transform.
-MEASURED bug (rework-attempt-1, commit ecea036): the robot rests pitched ~2
-deg nose-down on its caster in every arm pose, and a yaw-only ground-truth
-transform put a point at grasp height ~12mm off along the approach — this is
-a real, independent fix, worth having even though this file's rest is
-otherwise an exact copy. locobot_motion_node.py's own _object_in_base is left
-with its pre-existing yaw-only version, unchanged (that node is not touched
-by this port).
+diagnostics.py, itself "moved verbatim from locobot_motion_node.py" (retired,
+see git history) — with ONE substantive change, carried over deliberately:
+_object_in_base uses rotations.world_to_body (full orientation) instead of a
+yaw-only transform. MEASURED bug (rework-attempt-1, commit ecea036): the
+robot rests pitched ~2 deg nose-down on its caster in every arm pose, and a
+yaw-only ground-truth transform put a point at grasp height ~12mm off along
+the approach — this is a real, independent fix, worth having even though this
+file's rest is otherwise an exact copy.
 
 Every measurement returns None when it could not be taken; callers treat
 None as UNVERIFIED (passes), never as a failure, so an instrumentation

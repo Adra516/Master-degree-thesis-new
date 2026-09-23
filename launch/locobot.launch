@@ -41,11 +41,6 @@
   <arg name="depth_height"                      default="240"/>
 
   <arg name="use_vision_nodes"                  default="false"/>
-  <!-- false (default) = today's pipeline, unchanged. true = the RAM-conscious
-       node-split pipeline (arm_node/navigation_node/world_model_node/
-       task_agent_node) — see vision_nodes.launch's own comment for the full
-       node list either way. -->
-  <arg name="use_new_graph"                     default="false"/>
   <arg name="vision_target_object"              default="target_object"/>
   <arg name="yolo_process_rate"                 default="5.0"/>
   <arg name="yolo_model"                        default="yolov8n.pt"/>
@@ -200,11 +195,11 @@
     <arg name="use_joint_pub"                     value="false"/>
   </include>
 
-  <!-- Vision System (VLM agent + YOLO Detection + Motion service) -->
+  <!-- Vision system: YOLO detection, world model, arm, navigation, and the
+       thin VLM task agent — see vision_nodes.launch for the full node list. -->
   <include if="$(arg use_vision_nodes)"
            file="$(find locobot_prog)/launch/vision_nodes.launch">
     <arg name="robot_name"          value="$(arg robot_name)"/>
-    <arg name="use_new_graph"       value="$(arg use_new_graph)"/>
     <arg name="target_object"       value="$(arg vision_target_object)"/>
     <arg name="yolo_process_rate"   value="$(arg yolo_process_rate)"/>
     <arg name="yolo_model"          value="$(arg yolo_model)"/>

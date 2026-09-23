@@ -2,11 +2,11 @@
 
 Ported near-verbatim from rework-attempt-1's src/locobot_prog/world/table.py
 ("moved from scripts/locobot_scene_model.py, where the class was called
-SceneModel although it only ever modelled the table"). Named world_table.py
-here (not table.py) to avoid colliding with the unrelated table_box() helper
-already in grasp_geometry.py. locobot_scene_model.py is untouched — still used
-by vlm_agent_node.py, the live production path — this is a separate copy for
-world_model_node. Pure: no ROS.
+SceneModel although it only ever modelled the table" — that file's only
+caller, vlm_agent_node.py, has since been retired, so locobot_scene_model.py
+was deleted; this is its sole surviving copy). Named world_table.py here (not
+table.py) to avoid colliding with the unrelated table_box() helper already in
+grasp_geometry.py. Pure: no ROS.
 """
 from typing import Optional
 

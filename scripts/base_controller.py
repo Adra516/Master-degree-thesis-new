@@ -1,8 +1,8 @@
 """Closed-loop turning and timed straight driving for the mobile base.
 
 Ported near-verbatim from rework-attempt-1's src/locobot_prog/navigation/
-base_controller.py, itself "moved verbatim from locobot_motion_node.py" —
-VERIFIED against the current locobot_motion_node.py's own
+base_controller.py, itself "moved verbatim from locobot_motion_node.py"
+(retired, see git history) — VERIFIED against that node's own
 _rotate_closed_loop/_rotate_to_target_yaw/_get_base_yaw: identical gains
 (TURN_GAIN=2.0), tolerances (YAW_TOLERANCE=0.15deg), deadlines (20s), TF-miss
 handling (60 misses ~1.2s), and odom-not-map rationale, before porting.

@@ -17,10 +17,6 @@ GRIP_Z_UNKNOWN  = 0.08
 # limits left_finger to [0.015, 0.037], so the jaws open 30-74 mm. FINGER_CLOSE
 # is deliberately below that minimum: the controller clamps it, so "close"
 # always means fully closed.
-# NOTE: locobot_motion_node.py still has its own GRIPPER_OPEN/GRIPPER_CLOSE at
-# these exact values — a deliberate, temporary duplication (see arm_node.py's
-# module docstring) until that node is retired; not a drift risk since both
-# are the same URDF-derived numbers, not independently tuned.
 FINGER_OPEN  = 0.037
 FINGER_CLOSE = 0.010
 # Assumed object size [H, W, L] when nothing was measured — only ever used to
@@ -289,11 +285,9 @@ def obstacle_boxes(detections, target_name, table_z, pad=0.02):
 
 
 # ── Gripper widths ───────────────────────────────────────────────────────────
-# Added for arm_node.py (ported from locobot_motion_node._gripper_span_for /
-# _gripper_target_close, same numbers, now plain functions instead of methods
-# so arm_node's caller can build a full GraspPlan without a motion-node
-# instance).  locobot_motion_node.py keeps its own copies for now — see the
-# FINGER_OPEN/FINGER_CLOSE note above.
+# Ported from the retired locobot_motion_node's _gripper_span_for /
+# _gripper_target_close (same numbers), as plain functions instead of methods
+# so arm_node's caller can build a full GraspPlan without an arm-node instance.
 
 def gripper_span_for(dims_hwl, grasp_axis, open_clearance=0.022, grip_squeeze=0.018):
     """Per-finger OPEN and CLOSE positions adapted to the object size.
@@ -347,7 +341,7 @@ def gripper_close_target(dims_hwl, grasp_axis, squeeze=0.006):
 
 
 # ── Collision boxes for the two-phase grasp ──────────────────────────────────
-# Added for arm_node.py — the same box math ported from locobot_motion_node's
+# Ported for arm_node.py from the retired locobot_motion_node's
 # _add_target_obstacle/_add_table_collision, as plain functions returning the
 # same dict shape obstacle_boxes() already uses (name, x, y, z, sx, sy, sz).
 

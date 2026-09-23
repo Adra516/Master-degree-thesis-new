@@ -15,9 +15,10 @@ calls anything equivalent to locobot_geometry.estimate_grasp_orientation
 (contour + symmetry-guard + 180-degree flip resolution via the raw
 theta_ray) — it relies purely on the raw, unrefined orientation field. This
 shim applies that SAME refinement (unchanged, imported from
-locobot_geometry.py, still used identically by the still-live
-vlm_agent_node.py) to every detection before publishing, so world_model_node
-gets the refined yaw, not the raw one.
+locobot_geometry.py) to every detection before publishing, so world_model_node
+gets the refined yaw, not the raw one. This is now locobot_geometry.py's only
+remaining caller — the rest of that file (its old vlm_agent_node.py-era scene
+logic) was deleted as dead code once that node was retired.
 
   /locobot/locobot_prog/detections_3d   (String, JSON)  <- from yolo_detection_node.py
         |

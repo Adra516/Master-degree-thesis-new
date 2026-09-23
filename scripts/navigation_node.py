@@ -7,22 +7,15 @@
                                      positioning, or one CORRECTion
 
 Ported near-verbatim from rework-attempt-1's scripts/navigation_node.py.
-Positioning measures the target through the world model and moves the base
-through BaseController; the policy itself is approach.py.
-
-drive_relative is fully self-contained and testable NOW:
+Positioning measures the target through the world model (world_model_node.py)
+and moves the base through BaseController; the policy itself is approach.py.
 
   rosservice call /locobot/navigation/drive_relative "{turn: 0.5236}"
 
-approach_target is NOT yet functional: it calls world_model/get_target and
-world_model/get_scene, and world_model_node does not exist until a later step
-in the plan (it is currently only a defined .srv/.msg TYPE contract, not a
-running server — see GetScene.srv/GetTarget.srv's own notes). Until then a
-call to approach_target fails cleanly with "World model unavailable: ...",
-caught by _Robot and reported as PositioningFailed — it does not crash the
-node. This is the expected, honest intermediate state of an incrementally-
-built service graph, not a bug: locobot_motion_node.py is still the complete,
-working, live production path regardless.
+approach_target calls world_model/get_target and world_model/get_scene, so it
+needs world_model_node running to do anything — if that node is down, the call
+fails cleanly with "World model unavailable: ...", caught by _Robot and
+reported as PositioningFailed, rather than crashing this node.
 """
 import math
 import os

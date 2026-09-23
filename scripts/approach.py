@@ -2,11 +2,12 @@
 
 Ported near-verbatim from rework-attempt-1's src/locobot_prog/navigation/
 approach.py, itself "moved from the VLM agent" — fine() is the single-shot
-GO/VERIFY/DECISION positioning loop already in vlm_agent_node.py's
-get_object() (COARSE_TOL/REOPEN_TOL/DIST_TOL, the TOO_CLOSE back-up branch
-with the sign bug independently found and fixed there this session — see
-that fix's commit message; confirmed here at "robot.drive(dist - standoff)",
-already correct). coarse()/correct() are additional capabilities used by
+GO/VERIFY/DECISION positioning loop that used to live in the retired
+vlm_agent_node.py's get_object() (COARSE_TOL/REOPEN_TOL/DIST_TOL, the
+TOO_CLOSE back-up branch with the sign bug independently found and fixed
+there this session — see that fix's commit message; confirmed here at
+"robot.drive(dist - standoff)", already correct). coarse()/correct() are
+additional capabilities used by
 navigation_node's COARSE/CORRECT modes, not yet exercised by anything —
 matching the earlier plan's navigate_to split, deferred to a later step.
 

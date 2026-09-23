@@ -10,18 +10,12 @@
 
 Ported near-verbatim from rework-attempt-1's scripts/arm_node.py — see
 grasp_executor.py's module docstring for what "ported" means here: the logic,
-timings and checks are the two-phase grasp already proven in
-locobot_motion_node.py, just executing a caller-supplied GraspPlan instead of
-deriving one inline.
+timings and checks are the two-phase grasp originally proven in
+locobot_motion_node.py (retired — see git history), just executing a
+caller-supplied GraspPlan instead of deriving one inline.
 
-This is an ADDITIONAL node, independently runnable and testable
-(`rosservice call /locobot/arm/set_arm_pose "pose_name: 'grasp_ready'"`) — it
-does NOT replace locobot_motion_node.py, which keeps running unchanged as the
-live production path until a later step in the plan rewires the agent to call
-these services instead. Both can run side by side without conflict: this
-node owns nothing the other doesn't already also own independently (it is,
-however, a SECOND MoveGroupCommander in that case — see the "why one MoveIt
-owner" note below; don't run both against a real grasp at once).
+Independently runnable and testable on its own:
+`rosservice call /locobot/arm/set_arm_pose "pose_name: 'grasp_ready'"`.
 
 Why one MoveIt owner: a second MoveGroupCommander doubles the planning-scene
 subscriptions, and a second PlanningSceneInterface can race this one on
@@ -43,10 +37,10 @@ from moveit_msgs.msg import MoveGroupAction
 # devel/lib/, so __file__'s directory (not Python's own auto-prepended
 # sys.path[0], which points at the WRAPPER's directory in that case) must be
 # added explicitly for the flat sibling imports below to resolve. Same
-# pattern already used by locobot_motion_node.py/vlm_agent_node.py — missing
-# here caused a real ModuleNotFoundError under `roslaunch` (never surfaced by
-# direct `python3 arm_node.py` testing, where the auto-prepend happens to
-# already be correct).
+# pattern already used by the now-retired locobot_motion_node.py/
+# vlm_agent_node.py — missing here caused a real ModuleNotFoundError under
+# `roslaunch` (never surfaced by direct `python3 arm_node.py` testing, where
+# the auto-prepend happens to already be correct).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from arm_actuators import ARM_POSES, CAMERA_CLEAR_POSE, ArmActuator, Gripper
 from arm_diagnostics import GraspDiagnostics

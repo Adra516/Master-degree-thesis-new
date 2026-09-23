@@ -28,7 +28,7 @@ The ONE thing the merge requires: TaskOrchestrator's services were registered
 whichever single node name this process ends up with — under "world_model"
 that would silently become /locobot/world_model/get_object instead of
 /locobot/task/get_object. Fixed here by registering them with explicit
-absolute names instead, so external callers (a future thin vlm_agent_node,
+absolute names instead, so external callers (task_agent_node.py,
 tools/e2e_sim.sh-equivalents) can still find them at the path the original
 two-process design used.
 

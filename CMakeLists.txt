@@ -62,14 +62,13 @@ add_message_files(
 )
 
 ## Generate services in the 'srv' folder
-# One .srv per action, replacing the JSON-over-topic dispatch
-# locobot_motion_node.py still uses — that node is untouched and still runs
-# standalone; these are ADDITIONAL, independently-testable nodes, not a
-# replacement, until a later step wires the agent to them.
-#   SetArmPose..ExecutePlace : arm_node (step 3)
-#   DriveRelative/ApproachTarget : navigation_node (step 4)
-#   GetScene/GetTarget/TargetMemory : world_model_node (step 5)
-#   GetObject/NavigateTo : task_orchestrator half of world_model_node (step 5)
+# One .srv per action, replacing the JSON-over-topic dispatch the retired
+# locobot_motion_node.py/vlm_agent_node.py used. This is now the only
+# pipeline — the old JSON dispatch is gone.
+#   SetArmPose..ExecutePlace : arm_node
+#   DriveRelative/ApproachTarget : navigation_node
+#   GetScene/GetTarget/TargetMemory : world_model_node
+#   GetObject/NavigateTo : task_orchestrator half of world_model_node
 #   PlanGrasp : TYPE contract only — no server implements it (see its own note)
 add_service_files(
   FILES
@@ -191,9 +190,7 @@ include_directories(
 ## Mark executable scripts (Python etc.) for installation
 ## in contrast to setup.py, you can choose the destination
 catkin_install_python(PROGRAMS
-  scripts/vlm_agent_node.py
   scripts/yolo_detection_node.py
-  scripts/locobot_motion_node.py
   scripts/set_camera_angle.py
   scripts/arm_node.py
   scripts/navigation_node.py

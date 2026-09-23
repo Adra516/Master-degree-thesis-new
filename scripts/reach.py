@@ -2,12 +2,12 @@
 
 Ported near-verbatim from rework-attempt-1's src/locobot_prog/geometry/
 reach.py ("moved from the VLM agent") — same ARM_LIMITS, STANDOFF_MIN/MAX/STEP,
-APPROACH_SAMPLES, PLATEAU_WEIGHT as the current vlm_agent_node.py's
+APPROACH_SAMPLES, PLATEAU_WEIGHT as the retired vlm_agent_node.py's
 _reach_optimal_standoff/_ik/_joint_margin. This is a relocation, not new
-capability: ARM_LIMITS is still a hardcoded dict here, same as today — the
+capability: ARM_LIMITS is still a hardcoded dict here, same as before — the
 "derive reach from the URDF at startup" idea from the original refactor brief
-was never actually implemented before the rework was reverted, and stays a
-genuinely open item, independent of this port.
+was never actually implemented, and stays a genuinely open item, independent
+of this port.
 
 Pure: the IK solver is passed in as a function ik(position, quaternion) ->
 (joint_names, joint_positions) or None, so the scoring can be tested without

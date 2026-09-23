@@ -3,17 +3,6 @@
   <arg name="robot_name"          default="locobot"/>
   <arg name="target_object"       default="target_object"/>
 
-  <!-- Which pipeline to launch. Default false = TODAY's exact behavior,
-       unchanged: yolo_detection_node.py -> vlm_agent_node.py (monolithic) ->
-       locobot_motion_node.py. true = the RAM-conscious node-split pipeline
-       (fancy-shimmying-grove plan, steps 3-6): yolo_detection_node.py ->
-       detection_shim.py -> world_model_node.py -> {arm_node.py,
-       navigation_node.py} -> task_agent_node.py (thin). Both halves were
-       built and verified independently (see each step's commit message);
-       this arg is the explicit, deliberate cutover point between them —
-       not a side effect of either pipeline's code existing in the repo. -->
-  <arg name="use_new_graph"       default="false"/>
-
   <!-- VLM agent args -->
   <arg name="vlm_model"           default="qwen3-vl:2b-instruct"/>
   <arg name="max_agent_steps"     default="5"/>
@@ -32,9 +21,6 @@
   <arg name="yolo_publish_image"  default="true"/>
 
   <!-- ── YOLO 3D detection node ───────────────────────────────────────── -->
-  <!-- Shared by both pipelines — this node is untouched by the rework
-       either way (see detection_shim.py's own docstring for why: it's the
-       one perception node everything depends on). -->
   <node
     pkg="locobot_prog"
     type="yolo_detection_node.py"
@@ -50,48 +36,8 @@
     <rosparam param="target_classes" subst_value="True">$(arg yolo_target_classes)</rosparam>
   </node>
 
-  <!-- ══════════════════════════════════════════════════════════════════
-       TODAY'S PIPELINE (use_new_graph:=false, the default) — unchanged
-       ══════════════════════════════════════════════════════════════════ -->
-
-  <!-- ── VLM agent node (inspect_scene + get_object tools) ────────────── -->
-  <node unless="$(arg use_new_graph)"
-    pkg="locobot_prog"
-    type="vlm_agent_node.py"
-    name="vlm_agent"
-    output="screen"
-    ns="$(arg robot_name)">
-    <param name="robot_name"            value="$(arg robot_name)"/>
-    <param name="target_object"         value="$(arg target_object)"/>
-    <param name="vlm_model"             value="$(arg vlm_model)"/>
-    <!-- FIX (found while adding the new pipeline below): this was named
-         max_agent_steps, but vlm_agent_node.py has only ever read ~max_steps
-         — the arg silently did nothing and every run used the node's own
-         hardcoded default (20), regardless of this launch file. The <arg>
-         keeps its established CLI name (max_agent_steps:=10 still works);
-         only the <param> it's delivered under is corrected. -->
-    <param name="max_steps"             value="$(arg max_agent_steps)"/>
-    <param name="grasp_min_interval_s"  value="$(arg grasp_min_interval_s)"/>
-  </node>
-
-  <!-- ── Motion service node ──────────────────────────────────────────── -->
-  <node unless="$(arg use_new_graph)"
-    pkg="locobot_prog"
-    type="locobot_motion_node.py"
-    name="locobot_motion"
-    output="screen"
-    ns="$(arg robot_name)">
-    <param name="robot_name" value="$(arg robot_name)"/>
-  </node>
-
-  <!-- ══════════════════════════════════════════════════════════════════
-       NEW PIPELINE (use_new_graph:=true) — steps 3-6 of the RAM-conscious
-       node-split plan. Six processes total incl. yolo_detection above,
-       capped per the measured RAM cost of the reverted 7-node attempt.
-       ══════════════════════════════════════════════════════════════════ -->
-
   <!-- ── Detection shim: JSON detections_3d -> typed DetectionArray ───── -->
-  <node if="$(arg use_new_graph)"
+  <node
     pkg="locobot_prog"
     type="detection_shim.py"
     name="detection_shim"
@@ -101,7 +47,7 @@
   </node>
 
   <!-- ── World model + task orchestrator (merged, one process) ────────── -->
-  <node if="$(arg use_new_graph)"
+  <node
     pkg="locobot_prog"
     type="world_model_node.py"
     name="world_model"
@@ -112,7 +58,7 @@
   </node>
 
   <!-- ── Arm: the only MoveGroupCommander ──────────────────────────────── -->
-  <node if="$(arg use_new_graph)"
+  <node
     pkg="locobot_prog"
     type="arm_node.py"
     name="arm"
@@ -122,7 +68,7 @@
   </node>
 
   <!-- ── Navigation: the only cmd_vel publisher ────────────────────────── -->
-  <node if="$(arg use_new_graph)"
+  <node
     pkg="locobot_prog"
     type="navigation_node.py"
     name="navigation"
@@ -132,7 +78,7 @@
   </node>
 
   <!-- ── Task agent: the thin VLM planning layer ───────────────────────── -->
-  <node if="$(arg use_new_graph)"
+  <node
     pkg="locobot_prog"
     type="task_agent_node.py"
     name="task_agent"
@@ -148,7 +94,6 @@
   <!-- ── Point camera toward table on startup ─────────────────────────── -->
   <!-- tilt=0.55 rad: more downward to see table at x~0.70 m              -->
   <!-- pan=0.0 rad: straight ahead                                         -->
-  <!-- Shared by both pipelines. -->
   <node pkg="locobot_prog" type="set_camera_angle.py" name="set_camera_angle"
         output="screen" ns="$(arg robot_name)">
     <param name="pan"   value="0.0"/>
