@@ -6,6 +6,11 @@ import tf.transformations as tft
 
 # ── Grasp-height model — THE single source of truth ──────────────────────────
 # Grip at a fraction of the object's own height instead of a near-constant band.
+# This formula (and its GRIP_Z_CEILING) is the BLIND fallback: it has no real
+# measurement to justify picking anywhere but a conservative guess. The real,
+# shape-aware search that isn't bound by this ceiling lives in grasp_planner.py
+# — see its module docstring for why it searches the object's whole physical
+# range instead of trusting this formula's single guessed height.
 GRIP_FRAC       = 0.50   # grip point as a fraction of object height (mid-body)
 GRIP_Z_FLOOR    = 0.06   # lowest height above the table the jaws safely reach
 GRIP_TOP_MARGIN = 0.018  # keep the jaws this far below the object's top edge

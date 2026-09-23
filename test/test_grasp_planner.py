@@ -176,6 +176,26 @@ def test_neck_above_the_grip_closes_fully():
     assert plan["gripper_close"] == gg.FINGER_CLOSE
 
 
+def test_neck_above_a_too_wide_body_is_reachable():
+    """A real bottle-shaped case: an 80 mm body (wider than the jaws can ever
+    open around, even before clearance) up to 130 mm, then a 46 mm neck the
+    jaws fit easily. The body alone would make the whole object ungraspable
+    under a search limited to a narrow window around the formula's guessed
+    (mid-body) anchor height — this is the regression test for that bug: the
+    real per-band measurement must be free to look past the body and find the
+    neck, not be blind to anything outside a guessed height."""
+    c = (0.45, 0.02)
+    body = sd.Cylinder(*c, 0.04, TABLE_Z, TABLE_Z + 0.13)
+    neck = sd.Cylinder(*c, 0.023, TABLE_Z + 0.13, TABLE_Z + 0.23)
+    corners = sd.corners(*c, 0.04, 0.04, TABLE_Z, TABLE_Z + 0.23)
+    plan, diag = plan_scene([body, neck], corners, c, [0.23, 0.08, 0.08])
+    assert plan is not None, diag
+    assert diag["band_z"] > 0.13, diag   # in the neck, not the too-wide body
+    assert_width(diag["width"], 0.046)
+    assert not plan["full_close"]        # uniform there, no taper just above it
+    assert grasp_xy_error(plan, c) < 0.003, (plan["grasp_point"], c)
+
+
 def test_uniform_can_is_not_tapered():
     c = (0.44, -0.03)
     shape, corners = cylinder(*c, 0.0275, 0.096)

@@ -212,6 +212,15 @@ class WorldModelNode:
         cloud = footprint.transform(footprint.backproject(depth, req.bbox, self.K), T)
         pts = footprint.object_points(cloud, req.table_z, center_xy=centre, radius=radius)
         bearing = math.atan2(centre[1], centre[0])
+        # Opt-in per-band width dump: `rosparam set .../plan_grasp_debug_bands
+        # true` to see the object's real measured width-by-height profile —
+        # this is what actually decides the grasp height now (no artificial
+        # window), so seeing it is the fast way to answer "why did/didn't it
+        # pick that band" without re-deriving it from a point-cloud dump.
+        if rospy.get_param("~plan_grasp_debug_bands", False):
+            for b in footprint.bands(pts, req.table_z, bearing):
+                rospy.loginfo("[world] plan_grasp band: z=%4.0fmm n=%4d width=%5.1fmm",
+                              b.z * 1000, b.n, b.width * 1000)
         plan, diag = gp.plan_from_points(pts, req.table_z, bearing, dims,
                                          max_dev=req.max_axis_deviation)
         res.points = diag["points"]

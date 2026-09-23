@@ -7,11 +7,15 @@ on what the camera actually measured instead of a bounding box:
 
 1. Height. The object is sliced into 5 mm bands and each band's LATERAL width
    (across the approach — what the jaws close over, and what one camera
-   measures well) is recorded. Candidate bands are those within HEIGHT_WINDOW of
-   grasp_height_above_table, which stays the anchor: it encodes the ARM's
-   reachable comfort band, which no depth image can observe; the profile adds
-   the OBJECT's shape, which that formula cannot observe. A band must fit the
-   real jaw span (30-74 mm, from the URDF finger limits) with clearance.
+   measures well) is recorded. EVERY band across the object's whole physically
+   reachable range is a candidate — from the arm's real floor (GRIP_Z_FLOOR) up
+   to just below its own measured top (GRIP_TOP_MARGIN) — not just a narrow
+   window around grasp_height_above_table's guessed height. That guess still
+   matters, but only as a tie-break preference (in _band_score) among bands
+   that already fit the jaws: real objects are not uniform (a bottle's neck can
+   be 40mm narrower than its body 4cm lower), and a formula with no depth image
+   has no way to know that — only the measured profile does. A band must fit
+   the real jaw span (30-74 mm, from the URDF finger limits) with clearance.
 
 2. The hidden back. A single camera sees only the front of the object: a box
    seen face-on shows its front face and nothing of the sides the jaws will
@@ -52,7 +56,6 @@ JAW_MAX = 2 * gg.FINGER_OPEN        # 0.074
 SIDE_CLEARANCE = 0.002              # the open jaws must pass the object by this, per side
 MAX_SEAT_TURN = math.radians(25.0)  # how far the object may turn in the closing jaws
 ROUND_TOL = 0.002                   # w(theta) this close to its minimum: nothing to turn toward
-HEIGHT_WINDOW = 0.02                # how far the profile may move the grip from the anchor
 # Tapered: the object narrows just above the grip. A close that stops at the
 # grip band's width cannot follow the object if it slips down into the jaws,
 # so the jaws close fully instead (what the baseline does for a bottle).
@@ -162,9 +165,12 @@ def plan_from_points(points, table_z, bearing, dims_hwl, depth_hint=None, max_de
         diag["reason"] = f"too short for a side grasp: {e}"
         return None, diag
     H = float(dims_hwl[0]) if dims_hwl is not None else None
-    z_lo = max(gg.GRIP_Z_FLOOR, z_ref - HEIGHT_WINDOW)
-    z_hi = min(z_ref + HEIGHT_WINDOW, gg.GRIP_Z_CEILING,
-               (H - gg.GRIP_TOP_MARGIN) if H is not None else math.inf)
+    # The object's WHOLE physically reachable range, not a narrow window around
+    # z_ref: z_ref remains the tie-break anchor (in _band_score) among bands
+    # that already fit the jaws, but nothing here stops the search from finding
+    # a real, better-fitting band far from that guess (see module docstring).
+    z_lo = gg.GRIP_Z_FLOOR
+    z_hi = (H - gg.GRIP_TOP_MARGIN) if H is not None else math.inf
 
     depth_prior = (depth_hint if depth_hint is not None
                    else float(dims_hwl[2]) if dims_hwl is not None else 0.0)
@@ -175,7 +181,15 @@ def plan_from_points(points, table_z, bearing, dims_hwl, depth_hint=None, max_de
     for b in bands:
         if not (z_lo <= b.z <= z_hi):
             continue
-        depth = max(b.a_back - b.a_front, depth_prior)
+        # depth_prior is a WHOLE-OBJECT guess (catalog L, or the widest part's
+        # own depth): correct for a band that's genuinely as deep as that, but
+        # capped by this band's own measured lateral width — a band that's
+        # narrower than the prior (a neck, once the search can reach one) is
+        # assumed roughly round, so its own front-to-back depth cannot exceed
+        # what its silhouette already shows sideways. Without this cap a wide
+        # body's depth_prior, applied to a narrow band far above it, overshoots
+        # the along-approach centre by the same amount the two widths differ.
+        depth = max(b.a_back - b.a_front, min(depth_prior, b.width))
         centre = slice_centre(b, bearing, depth)
         for cand in contact_candidates(b.xy, bearing, max_dev, centre):
             w = cand["width"]
