@@ -77,11 +77,11 @@
     <param name="robot_name" value="$(arg robot_name)"/>
   </node>
 
-  <!-- ── Task agent: the thin VLM planning layer ───────────────────────── -->
+  <!-- ── VLM agent: the thin VLM planning layer ────────────────────────── -->
   <node
     pkg="locobot_prog"
-    type="task_agent_node.py"
-    name="task_agent"
+    type="vlm_agent_node.py"
+    name="vlm_agent"
     output="screen"
     ns="$(arg robot_name)">
     <param name="robot_name"            value="$(arg robot_name)"/>

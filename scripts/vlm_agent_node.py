@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""task_agent_node — the VLM planning layer, thin.
+"""vlm_agent_node — the VLM planning layer, thin.
 
-Ported near-verbatim from rework-attempt-1's scripts/vlm_agent_node.py.
-This is now the ONLY agent node — it replaced the old, monolithic
-vlm_agent_node.py (1064 lines; retired, see git history) as vision_nodes.
-launch's live entry point. All the geometry/navigation/grasp logic that used
-to live inline in that file now lives in world_model_node.py's
-TaskOrchestrator, reached through exactly two service calls.
+Reuses the name of the original, monolithic vlm_agent_node.py (1064 lines;
+retired, see git history) — this file is its replacement, not the same code:
+ported near-verbatim from rework-attempt-1's scripts/vlm_agent_node.py
+(itself briefly renamed task_agent_node.py in this repo, then renamed back).
+All the geometry/navigation/grasp logic that used to live inline in the old
+file now lives in world_model_node.py's TaskOrchestrator, reached through
+exactly two service calls — this file only runs the VLM loop.
 
 The VLM (Ollama, qwen3-vl) is given the user's request and two tools, and
 decides what to call. Each tool is one service call to task_orchestrator (the
@@ -52,7 +53,7 @@ Workflow:
 End the episode by stating the outcome."""
 
 
-class TaskAgentNode:
+class VlmAgentNode:
 
     def __init__(self):
         ns = rospy.get_param("~robot_name", "locobot")
@@ -229,5 +230,5 @@ class TaskAgentNode:
 
 
 if __name__ == "__main__":
-    rospy.init_node("task_agent")
-    TaskAgentNode().run()
+    rospy.init_node("vlm_agent")
+    VlmAgentNode().run()
