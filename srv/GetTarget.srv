@@ -1,0 +1,8 @@
+# Where the target is, from every source the world model has.
+#
+# NOTE: same status as GetScene.srv above — the TYPE exists so
+# navigation_node.py's imports resolve, but world_model_node (the server) is
+# built in step 5. Until then this call fails the same way GetScene's does.
+string target_name        # "" = the target already being tracked
+---
+TargetState state

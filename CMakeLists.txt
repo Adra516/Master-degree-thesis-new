@@ -12,6 +12,7 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
   geometry_msgs
+  sensor_msgs
   message_generation
 )
 
@@ -53,14 +54,20 @@ add_message_files(
   FILES
   GraspPlan.msg
   CollisionBox.msg
+  WorldObject.msg
+  TableModel.msg
+  TargetState.msg
 )
 
 ## Generate services in the 'srv' folder
-# arm_node's typed service contract (RAM-conscious node split, step 3 of the
-# fancy-shimmying-grove plan). One .srv per action, replacing the JSON-over-
-# topic dispatch locobot_motion_node.py still uses — that node is untouched
-# and still runs standalone; this is an ADDITIONAL, independently-testable
-# node, not a replacement, until a later step wires the agent to it.
+# One .srv per action, replacing the JSON-over-topic dispatch
+# locobot_motion_node.py still uses — that node is untouched and still runs
+# standalone; these are ADDITIONAL, independently-testable nodes, not a
+# replacement, until a later step wires the agent to them.
+#   SetArmPose..ExecutePlace : arm_node (step 3)
+#   DriveRelative/ApproachTarget : navigation_node (step 4)
+#   GetScene/GetTarget : TYPE contract only for now — world_model_node, the
+#     server that implements them, is a later step (see GetScene.srv's note)
 add_service_files(
   FILES
   SetArmPose.srv
@@ -69,6 +76,10 @@ add_service_files(
   ExecutePregrasp.srv
   ExecuteGrasp.srv
   ExecutePlace.srv
+  DriveRelative.srv
+  ApproachTarget.srv
+  GetScene.srv
+  GetTarget.srv
 )
 
 ## Generate added messages and services with any dependencies listed here
@@ -76,6 +87,7 @@ generate_messages(
   DEPENDENCIES
   std_msgs
   geometry_msgs
+  sensor_msgs
 )
 
 ################################################
@@ -110,7 +122,7 @@ generate_messages(
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES locobot_prog
-  CATKIN_DEPENDS roscpp rospy std_msgs geometry_msgs message_runtime
+  CATKIN_DEPENDS roscpp rospy std_msgs geometry_msgs sensor_msgs message_runtime
 #  DEPENDS system_lib
 )
 
@@ -177,6 +189,7 @@ catkin_install_python(PROGRAMS
   scripts/locobot_motion_node.py
   scripts/set_camera_angle.py
   scripts/arm_node.py
+  scripts/navigation_node.py
   #scripts/set_arm_position.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

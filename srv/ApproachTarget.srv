@@ -1,0 +1,20 @@
+# Put the base at `standoff` from the target, facing it.
+#   COARSE:  face it, then drive most of the way (the long approach)
+#   FINE:    measure, face, drive, verify once, then decide (single shot, no loop)
+#   CORRECT: one bounded correction from a fresh measurement (before a retry)
+uint8 COARSE=1
+uint8 FINE=2
+uint8 CORRECT=3
+string target_name
+float64 standoff          # m
+float64 table_near_x      # m; forward drives keep a margin to this table edge
+uint8 mode
+---
+bool success
+float64 distance          # final measured distance to the target (m)
+float64 bearing           # final measured bearing (rad)
+geometry_msgs/Point target  # final measured target position, base_link
+bool too_close            # FINE: still too close after backing up
+string message
+string zone               # set when the failure came from a scene re-read
+string scene_summary

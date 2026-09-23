@@ -1,0 +1,12 @@
+# Move the base relative to where it is now: turn in place first, then drive
+# straight. The turn is closed-loop on odometry yaw; the drive is timed at
+# max_linear. A forward drive is refused when the laser sees an obstacle ahead.
+float64 turn            # rad, positive = counter-clockwise; 0 = no turn
+float64 distance        # m, positive = forward; 0 = no drive
+float64 max_angular     # rad/s; 0 = node default
+float64 max_linear      # m/s; 0 = node default
+---
+bool success
+bool front_blocked      # the forward drive was refused
+float64 turn_achieved   # rad, measured on odometry; NaN = odometry unavailable
+string message

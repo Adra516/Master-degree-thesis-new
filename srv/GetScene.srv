@@ -1,0 +1,30 @@
+# The scene around the target: objects, what blocks the approach, the zone,
+# the table and the collision boxes for the arm.
+#
+# NOTE: this type is defined here (step 4 of the RAM-conscious node-split
+# plan) because navigation_node.py's ApproachTarget handler calls it, but the
+# SERVER (world_model_node) is not implemented until step 5 — until then any
+# call to /locobot/world_model/get_scene fails with "service not found", which
+# navigation_node's _Robot class catches and reports as
+# PositioningFailed("World model unavailable: ..."). drive_relative does not
+# depend on this and is fully functional now.
+string target_name        # "" = the target already being tracked
+float64 nav_x_limit       # only objects nearer than this count as blocking; 0 = all
+float64 standoff          # the standoff the approach is planned for; 0 = default (0.45)
+bool use_cache            # answer an empty frame with the last detections (< 30 s old)
+bool include_bev          # also render the bird's-eye view
+---
+string catalog_key
+bool target_found
+WorldObject target
+WorldObject[] objects
+string[] blocking         # labels of objects in the approach corridor
+string zone               # grasp_ready | drive_forward | rotate_needed | path_blocked | target_not_found
+TableModel table
+string summary            # one line for the VLM
+string[] visible          # labels in the frame
+int32 detection_count
+bool from_cache
+bool target_locked
+CollisionBox[] obstacles  # every non-target object, sized for the arm
+sensor_msgs/Image bev
