@@ -358,6 +358,8 @@ class WorldModelNode:
             p = self.odom_cache.measure()
         elif req.action == req.REPROJECT:
             p = self.odom_cache.reproject()
+        elif req.action == req.SET:
+            p = self.odom_cache.set([req.position.x, req.position.y, req.position.z])
         elif req.action == req.FORGET:
             with self._lock:
                 self.model.forget_target()
@@ -685,6 +687,17 @@ class TaskOrchestrator:
                           "(width %.0fmm, turn %.0f°)", r.reason, r.width * 1000,
                           math.degrees(r.seat_turn))
             plan_msg, source = r.plan, "planner"
+            # Re-prime the odometry cache with THIS measurement: it's real
+            # geometry from the actual band picked, not YOLO3D's bbox-based
+            # position (which has a documented range-dependent radial bias).
+            # The contact-check gate compares its commanded point against
+            # whatever the cache holds — if the cache still held the older,
+            # cruder estimate, a genuinely more accurate plan would disagree
+            # with it by that same bias and look like the object had moved.
+            try:
+                self.target_memory(action=TargetMemoryRequest.SET, position=plan_msg.grasp_point)
+            except rospy.ServiceException as e:
+                rospy.logwarn("[task] Could not re-prime odometry cache: %s", e)
         else:
             if r is not None:
                 rospy.loginfo("[task] Depth planner declined (%s) — using baseline", r.reason)

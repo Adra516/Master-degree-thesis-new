@@ -55,6 +55,23 @@ class TargetOdomCache:
 
     # ── measure (stationary) ─────────────────────────────────────────────────
 
+    def _cache(self, pos_base):
+        """Transform a base-frame point to odom and cache it there — the part
+        measure() and set() share. Returns True on success."""
+        pt = PointStamped()
+        pt.header.frame_id = self.base_frame
+        pt.header.stamp = rospy.Time(0)
+        pt.point.x, pt.point.y, pt.point.z = pos_base
+        try:
+            po = self.tf.transform(pt, self.odom_frame, rospy.Duration(0.5))
+            self.odom_pt = (po.point.x, po.point.y, po.point.z)
+            self.meas_range = float(math.hypot(pos_base[0], pos_base[1]))
+            return True
+        except Exception as e:
+            rospy.logwarn("[target_cache] odom cache failed: %s", e)
+            self.odom_pt = None
+            return False
+
     def measure(self, max_age=1.5, min_frames=3):
         """Median of fresh frames; caches the result in odom.  Robot must be
         stationary (caller's responsibility).  Returns [x, y, z] base-frame
@@ -63,18 +80,18 @@ class TargetOdomCache:
         if len(fr) < min_frames:
             return None
         med = np.median(np.array(fr), axis=0)
-        pt = PointStamped()
-        pt.header.frame_id = self.base_frame
-        pt.header.stamp = rospy.Time(0)
-        pt.point.x, pt.point.y, pt.point.z = med
-        try:
-            po = self.tf.transform(pt, self.odom_frame, rospy.Duration(0.5))
-            self.odom_pt = (po.point.x, po.point.y, po.point.z)
-            self.meas_range = float(math.hypot(med[0], med[1]))
-        except Exception as e:
-            rospy.logwarn("[target_cache] odom cache failed: %s", e)
-            self.odom_pt = None
+        self._cache(med)
         return [float(v) for v in med]
+
+    def set(self, pos_base):
+        """Cache an EXPLICIT base-frame point directly, instead of the median
+        of raw detections — for when the caller already has something more
+        precise than a per-frame YOLO3D position (e.g. the grasp planner's own
+        real-geometry measurement of whichever band it picked; YOLO3D's own
+        bbox-based position has a documented radial bias that grows with
+        range). Robot must be stationary, same as measure(). Returns
+        [x, y, z] on success, None if the TF lookup failed."""
+        return [float(v) for v in pos_base] if self._cache(pos_base) else None
 
     # ── odom-held queries (valid mid-motion / camera-blind) ─────────────────
 

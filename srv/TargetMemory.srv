@@ -3,7 +3,14 @@
 uint8 MEASURE=1           # remember where it is now (the robot must be still)
 uint8 REPROJECT=2         # where the remembered point is now, in base_link
 uint8 FORGET=3            # drop the target lock (after a successful grasp)
+uint8 SET=4               # remember an EXPLICIT position instead of measuring
+                          # one from the raw detection buffer — for when a
+                          # caller already has something more precise (the
+                          # grasp planner's own real-geometry measurement,
+                          # not YOLO3D's bbox-based estimate, which has a
+                          # documented range-dependent radial bias)
 uint8 action
+geometry_msgs/Point position   # SET only: the position to remember
 ---
 bool ok
 geometry_msgs/Point position
