@@ -1,0 +1,64 @@
+"""A misclassified small object must not become a table-sized obstacle.
+
+Regression for obs_person_0: YOLO3D's per-class prior sized a "person" at
+0.6 x 0.6 m, the resulting 0.64 m box contained the arm's ready pose, and every
+pre-grasp Cartesian path then started in collision (0% coverage).
+"""
+import math
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_HERE, "..", "scripts"))
+from resolver import CatalogResolver, ObjectCatalog  # noqa: E402
+from world_model import MAX_UNCATALOGUED_FOOTPRINT, WorldModel  # noqa: E402
+
+CATALOG = ObjectCatalog.from_yaml(os.path.join(_HERE, "..", "config", "objects.yaml"))
+
+
+def _model():
+    return WorldModel(CatalogResolver(CATALOG), CATALOG, "bottle")
+
+
+def _det(label, pos, dims, conf=0.5):
+    return {"class_name": label, "confidence": conf, "object_id": None,
+            "bbox_2d": [0, 0, 10, 10], "depth_m": pos[0], "position_base": list(pos),
+            "dims_hwl": list(dims), "orientation": 0.0}
+
+
+def _box_for(model, label):
+    return next(b for b in model.obstacles() if label in b["name"])
+
+
+def test_the_logged_phantom_person_is_capped():
+    m = _model()
+    m.update([_det("person", (0.498, 0.254, 0.306), (0.114, 0.6, 0.6))], 0.0, None)
+    b = _box_for(m, "person")
+    assert b["sx"] <= MAX_UNCATALOGUED_FOOTPRINT + 0.04 + 1e-9, b
+    # the arm's ready pose (EE ~ (0.31, 0.01), the links a few cm either side)
+    # must be clear of it in y: box spans y in [0.254 - sx/2, 0.254 + sx/2]
+    assert b["y"] - b["sy"] / 2 > 0.10, b
+
+
+def test_catalogued_and_surface_objects_keep_their_measured_size():
+    m = _model()
+    m.update([_det("cell phone", (0.45, 0.20, 0.30), (0.096, 0.055, 0.055)),
+              _det("dining table", (0.66, 0.0, 0.25), (0.02, 0.40, 0.80))], 0.0, None)
+    can = _box_for(m, "cell phone")
+    assert math.isclose(can["sx"], 0.055 + 0.04), can
+    tbl = next(d for d in m.latest if d["class_name"] == "dining table")
+    assert tbl["dims_hwl"] == [0.02, 0.40, 0.80], tbl
+
+
+def test_a_plausible_uncatalogued_object_is_untouched():
+    m = _model()
+    m.update([_det("cup", (0.45, 0.20, 0.30), (0.10, 0.08, 0.08))], 0.0, None)
+    assert math.isclose(_box_for(m, "cup")["sx"], 0.08 + 0.04)
+
+
+if __name__ == "__main__":
+    for name, fn in list(globals().items()):
+        if name.startswith("test_"):
+            fn()
+            print("ok", name)
+    print("ALL PASS")

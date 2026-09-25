@@ -29,6 +29,15 @@ DIM_CALIB_MIN_SAMPLES = 3
 DIM_CALIB_WINDOW = 20
 # Recent target positions kept for the median: a single frame's bbox jitter
 # (~cm) is what occasionally clipped the tight bottle grasp.
+# YOLO3D cannot measure the size of a class it has no reason to know: it fills
+# dims from a per-class prior (a "person" is 0.6 x 0.6 m). A small object the
+# detector mislabels then becomes a table-sized obstacle — seen live as
+# obs_person_0, 0.64 m square, whose box contained the arm's own ready pose, so
+# every pre-grasp Cartesian path started "in collision" (0% coverage), and the
+# same size blocked the approach corridor ("path blocked by person"). Anything
+# that is neither a catalogued object nor the table surface is capped to what can
+# plausibly stand on this table (the largest catalogued object is 0.07 m).
+MAX_UNCATALOGUED_FOOTPRINT = 0.15
 POSITION_BUFFER = 8
 RECENT_WINDOW_S = 1.5
 # How long an empty frame may be answered with the last non-empty one.
@@ -95,10 +104,11 @@ class WorldModel:
     def update(self, detections, now, K=None):
         """Ingest one detection frame. Returns the accepted target detection
         (also stored as self.lock), or None."""
+        surface = self.catalog.surface_labels()
+        detections = [self._plausible_size(d, surface) for d in detections]
         self.latest = detections
         if detections:
             self._cache, self._cache_t = detections, now
-        surface = self.catalog.surface_labels()
         for d in detections:
             label = normalize(d.get("class_name", ""))
             if _usable(d):
@@ -121,6 +131,19 @@ class WorldModel:
         self.lock_t = now
         self.recent.append((now, *(float(v) for v in d["position_base"])))
         return self.lock
+
+    def _plausible_size(self, d, surface):
+        """`d` with an implausibly large footprint capped, for labels that are
+        neither catalogued nor a surface (see MAX_UNCATALOGUED_FOOTPRINT)."""
+        label = normalize(d.get("class_name", ""))
+        dims = d.get("dims_hwl")
+        if not dims or label in surface or self.catalog.keys_for_label(label):
+            return d
+        h, w, l = (float(v) for v in dims)
+        if max(w, l) <= MAX_UNCATALOGUED_FOOTPRINT:
+            return d
+        return dict(d, dims_hwl=[h, min(w, MAX_UNCATALOGUED_FOOTPRINT),
+                                 min(l, MAX_UNCATALOGUED_FOOTPRINT)])
 
     def calibrated_dims(self, key):
         """Median [H, W, L] from good-vantage frames, or None if too few."""
