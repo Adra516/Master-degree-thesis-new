@@ -56,6 +56,23 @@ JAW_MAX = 2 * gg.FINGER_OPEN        # 0.074
 SIDE_CLEARANCE = 0.002              # the open jaws must pass the object by this, per side
 MAX_SEAT_TURN = math.radians(25.0)  # how far the object may turn in the closing jaws
 ROUND_TOL = 0.002                   # w(theta) this close to its minimum: nothing to turn toward
+# The jaw pads are a vertical strip, not a line: the finger mesh
+# (mobile_wx250s_10_gripper_finger.stl) is 55.3 x 16.0 x 29.0 mm, and its 29 mm
+# side is vertical for a level grip. Everything within half of that above and
+# below the grip height has to fit between the open jaws too.
+PAD_HALF = 0.0145
+# ...plus what the arm actually does: it sits ~3 mm below the commanded height
+# (pre-grasp dz was -2.3 to -3.1 mm on every run, gravity sag) and bands are 5 mm
+# apart. A live trace with ground truth showed why the margin matters: at 188 mm
+# the pad reached down to the 58 mm shoulder, the right finger came within
+# ~1.6 mm of it, and with this model's friction (mu 5) that graze dragged the
+# bottle 21 mm forward before the jaws closed.
+PAD_MARGIN = 0.008
+# Per-side clearance at which more room stops mattering. A tight fit is easy to
+# miss by a few mm of lateral error (one finger lands on the object and pushes
+# it), so clearance is the main preference after seating; ~10 mm/side is what
+# earlier sessions found workable on this bottle.
+CLEARANCE_FULL = 0.010
 # Tapered: the object narrows just above the grip. A close that stops at the
 # grip band's width cannot follow the object if it slips down into the jaws,
 # so the jaws close fully instead (what the baseline does for a bottle).
@@ -136,14 +153,22 @@ def contact_candidates(xy, bearing, max_dev=0.0, centre=None):
     return out
 
 
-def _band_score(cand, z, z_ref):
+def _band_score(cand, z, z_ref, env_width):
     """Seating first (1 when the object will not turn in the jaws, 0 at
-    MAX_SEAT_TURN); then staying near the anchor height; then clearance for
-    the open jaws; then keeping the default closing axis."""
-    clearance = (JAW_MAX - cand["width"]) / 2.0
+    MAX_SEAT_TURN); then clearance for the open jaws over the WHOLE pad height
+    (env_width, the widest the object gets within PAD_HALF of z), which is what
+    decides whether a few mm of lateral error pushes the object; then, only as a
+    tie-break, staying near the formula's anchor height; then keeping the
+    default closing axis.
+
+    The anchor bonus is deliberately small. At 0.5 it outweighed the whole
+    clearance term, so the bottle's 66 mm body (4 mm/side) beat its 52 mm neck
+    (11 mm/side) whenever the body fit at all — the formula's height guess
+    silently overruled the measurement it was meant to break ties between."""
+    clearance = (JAW_MAX - max(env_width, cand["width"])) / 2.0
     return (1.0 - cand["turn"] / MAX_SEAT_TURN
-            + 0.5 * math.exp(-((z - z_ref) / 0.015) ** 2)
-            + 0.3 * min(1.0, clearance / 0.01)
+            + 1.0 * min(1.0, clearance / CLEARANCE_FULL)
+            + 0.1 * math.exp(-((z - z_ref) / 0.015) ** 2)
             - 0.2 * abs(cand["dev"]) / math.radians(30.0))
 
 
@@ -189,6 +214,12 @@ def plan_from_points(points, table_z, bearing, dims_hwl, depth_hint=None, max_de
         # what its silhouette already shows sideways. Without this cap a wide
         # body's depth_prior, applied to a narrow band far above it, overshoots
         # the along-approach centre by the same amount the two widths differ.
+        # How much wider than this band the object gets within the pad's height
+        # (a ratio, so it carries over to a rotated closing axis: a box turned
+        # 30° is 82 mm across the approach but 60 mm across its faces).
+        env_ratio = max(1.0, max(o.width for o in bands
+                                 if abs(o.z - b.z) <= PAD_HALF + PAD_MARGIN + 1e-9)
+                        / max(b.width, 1e-6))
         depth = max(b.a_back - b.a_front, min(depth_prior, b.width))
         centre = slice_centre(b, bearing, depth)
         for cand in contact_candidates(b.xy, bearing, max_dev, centre):
@@ -199,11 +230,16 @@ def plan_from_points(points, table_z, bearing, dims_hwl, depth_hint=None, max_de
             if w + 2 * SIDE_CLEARANCE > JAW_MAX:
                 rejected.append(f"{b.z*1000:.0f}mm: {w*1000:.0f}mm too wide for the jaws")
                 continue
+            env_width = w * env_ratio
+            if env_width + 2 * SIDE_CLEARANCE > JAW_MAX:
+                rejected.append(f"{b.z*1000:.0f}mm: jaw pad would overlap "
+                                f"{env_width*1000:.0f}mm of the object")
+                continue
             if cand["turn"] > MAX_SEAT_TURN:
                 rejected.append(f"{b.z*1000:.0f}mm: would turn "
                                 f"{math.degrees(cand['turn']):.0f}° in the jaws")
                 continue
-            score = _band_score(cand, b.z, z_ref)
+            score = _band_score(cand, b.z, z_ref, env_width)
             if best is None or score > best[0]:
                 best = (score, b, cand, centre, depth)
     if best is None:

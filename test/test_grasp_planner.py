@@ -196,6 +196,44 @@ def test_neck_above_a_too_wide_body_is_reachable():
     assert grasp_xy_error(plan, c) < 0.003, (plan["grasp_point"], c)
 
 
+def test_fitting_body_loses_to_a_roomier_neck():
+    """The real bottle_beer, from the widths measured live in Gazebo: 66 mm from
+    the table to ~165 mm (fits the 74 mm jaws, but with only 4 mm a side), then a
+    shoulder and a neck narrowing to ~36 mm. The body FITS, so the older
+    "too wide" test never covered this: the planner has to prefer the neck for
+    its room, not only take it when the body is measured over the limit. With the
+    formula's height guess weighted 0.5 the body scored 1.60 against the neck's
+    1.30 and the arm gripped 82 mm up, every run the measurement came in under
+    70 mm."""
+    c = (0.45, 0.0)
+    steps = [(0.0333, 0.000, 0.165), (0.0310, 0.165, 0.170), (0.0290, 0.170, 0.175),
+             (0.0260, 0.175, 0.180), (0.0230, 0.180, 0.186), (0.0200, 0.186, 0.196),
+             (0.0180, 0.196, 0.233)]
+    shapes = [sd.Cylinder(*c, r, TABLE_Z + lo, TABLE_Z + hi) for r, lo, hi in steps]
+    corners = sd.corners(*c, 0.0333, 0.0333, TABLE_Z, TABLE_Z + 0.233)
+    plan, diag = plan_scene(shapes, corners, c, [0.233, 0.066, 0.066])
+    assert plan is not None, diag
+    assert diag["band_z"] > 0.165, ("gripped the body", diag["band_z"], diag["width"])
+    clearance = (gp.JAW_MAX - diag["width"]) / 2.0
+    assert clearance >= 0.008, ("not roomier than the body's ~4 mm", clearance)
+    assert gg.GRIP_Z_FLOOR <= diag["band_z"] <= 0.233 - gg.GRIP_TOP_MARGIN
+    assert grasp_xy_error(plan, c) < 0.004, (plan["grasp_point"], c)
+
+
+def test_pad_height_is_checked_not_just_one_band():
+    """A band whose own width fits can still be a bad grip if the 29 mm-tall jaw
+    pad also spans a much wider part: a 46 mm neck starting 5 mm above an 80 mm
+    body has a fitting band right above the body, with the pad overlapping it."""
+    c = (0.45, 0.0)
+    body = sd.Cylinder(*c, 0.040, TABLE_Z, TABLE_Z + 0.130)
+    neck = sd.Cylinder(*c, 0.023, TABLE_Z + 0.130, TABLE_Z + 0.230)
+    corners = sd.corners(*c, 0.04, 0.04, TABLE_Z, TABLE_Z + 0.23)
+    plan, diag = plan_scene([body, neck], corners, c, [0.23, 0.08, 0.08])
+    assert plan is not None, diag
+    assert diag["band_z"] - 0.130 >= gp.PAD_HALF + gp.PAD_MARGIN - 0.0051, \
+        ("pad would overlap the 80 mm body", diag["band_z"])
+
+
 def test_uniform_can_is_not_tapered():
     c = (0.44, -0.03)
     shape, corners = cylinder(*c, 0.0275, 0.096)
