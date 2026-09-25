@@ -44,6 +44,7 @@
   <arg name="vision_target_object"              default="target_object"/>
   <arg name="yolo_process_rate"                 default="5.0"/>
   <arg name="yolo_model"                        default="yolov8n.pt"/>
+  <arg name="use_vlm_agent"                     default="true"/>
   <arg name="vlm_model"                         default="qwen3-vl:2b-instruct"/>
   <arg name="vlm_ollama_api_url"                default="http://localhost:11434/api/chat"/>
   <arg name="vlm_request_timeout"               default="60.0"/>
@@ -203,6 +204,7 @@
     <arg name="target_object"       value="$(arg vision_target_object)"/>
     <arg name="yolo_process_rate"   value="$(arg yolo_process_rate)"/>
     <arg name="yolo_model"          value="$(arg yolo_model)"/>
+    <arg name="use_vlm_agent"       value="$(arg use_vlm_agent)"/>
     <arg name="vlm_model"           value="$(arg vlm_model)"/>
   </include>
 

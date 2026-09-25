@@ -4,6 +4,9 @@
   <arg name="target_object"       default="target_object"/>
 
   <!-- VLM agent args -->
+  <!-- false = don't start the Ollama-backed agent at all; drive picks yourself:
+       rosservice call /locobot/task/get_object "target_name: 'bottle'" -->
+  <arg name="use_vlm_agent"       default="true"/>
   <arg name="vlm_model"           default="qwen3-vl:2b-instruct"/>
   <arg name="max_agent_steps"     default="5"/>
   <arg name="grasp_min_interval_s" default="5.0"/>
@@ -79,6 +82,7 @@
 
   <!-- ── VLM agent: the thin VLM planning layer ────────────────────────── -->
   <node
+    if="$(arg use_vlm_agent)"
     pkg="locobot_prog"
     type="vlm_agent_node.py"
     name="vlm_agent"
