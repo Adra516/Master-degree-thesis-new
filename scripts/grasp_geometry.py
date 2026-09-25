@@ -214,6 +214,37 @@ def contact_verdict(metrics, miss_tol_mm):
     return True, f"ok (along-jaw {along:+.1f}mm, miss {miss:.1f}mm)"
 
 
+# How far the odometry-held object position may sit from the commanded grasp point
+# before the straight-in leg is REFUSED rather than re-aimed. The base creeps while
+# the arm holds these poses (measured: +8 mm forward and 1.5° of yaw between
+# camera_clear and grasp_ready, ~1.7 mm/s afterwards), so the object really does
+# shift in base_link between planning and descent: 15-30 mm was seen every run.
+REAIM_MAX_MM = 45.0
+
+
+def descent_aim(commanded_xy, object_xy, tol_mm, max_reaim_mm=REAIM_MAX_MM):
+    """Where the straight-in leg should aim, before any motion.
+
+    commanded_xy : the grasp point the pre-grasp was verified for (base_link).
+    object_xy    : where the odometry-held reference says the object is NOW.
+    Returns (aim_xy, verdict, drift_mm):
+      "ok"      drift within tol_mm — aim at the commanded point as before.
+      "reaimed" beyond tol_mm but within max_reaim_mm — the object shifted
+                relative to the base (creep), so aim at where it is now. The
+                post-descent contact check against the real finger positions
+                still has to pass before the jaws close.
+      "refused" further than max_reaim_mm — too large to trust either number.
+    """
+    dx = float(object_xy[0]) - float(commanded_xy[0])
+    dy = float(object_xy[1]) - float(commanded_xy[1])
+    drift = math.hypot(dx, dy) * 1000.0
+    if drift <= tol_mm:
+        return (float(commanded_xy[0]), float(commanded_xy[1])), "ok", drift
+    if drift <= max_reaim_mm:
+        return (float(object_xy[0]), float(object_xy[1])), "reaimed", drift
+    return (float(commanded_xy[0]), float(commanded_xy[1])), "refused", drift
+
+
 def grasp_pose(target_xy, dims_hwl, table_z):
     """EE horizontal grasp pose (position [x,y,z], quaternion [x,y,z,w]):
     gripper level, +x pointing at the object, descends onto the object body.

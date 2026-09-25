@@ -63,6 +63,7 @@ class GraspExecutor:
 
         self.table_surface_z = 0.25
         self._last_grasp_z = None         # EE height of the last grasp (for place)
+        self._last_grasp_xy = None        # where the jaws last closed (for place)
         self.last_close_target = None     # last commanded per-finger close (m)
         # pregrasp() leaves the arm holding at the standoff and stashes what
         # grasp() needs here. None = no verified pre-grasp: grasp() must refuse.
@@ -171,6 +172,9 @@ class GraspExecutor:
         base rests on the table while still held, so any tilt is squared up
         before release.
         """
+        last = self._last_grasp_xy
+        if last is not None and math.hypot(x - last[0], y - last[1]) < 0.06:
+            x, y = last        # the arm is over the point it actually grasped
         if place_z is None:
             place_z = (self._last_grasp_z or self.table_surface_z + 0.10) - 0.003
         approach_z = place_z + 0.10
@@ -465,17 +469,34 @@ class GraspExecutor:
         # cannot brush it — and gazebo_grasp_fix welds on first two-sided contact
         # with NO close command, so a brushed object would be carried away by the
         # retreat (measured: lifted to z+0.15 and dragged 254 mm before dropping).
+        #
+        # A moderate mismatch is not a reason to stop at the standoff: the base
+        # creeps while the arm holds these poses, so the object genuinely shifts
+        # in base_link between planning and now (the odometry reference is
+        # world-fixed, so it sees that; the commanded point is not). Within
+        # REAIM_MAX_MM the leg aims at where the object is now instead of
+        # refusing; only a larger disagreement stops here. Gate 2b below still
+        # checks the real finger positions before the jaws close.
         miss_tol = live_param("contact_miss_tol_mm", CONTACT_MISS_TOL_MM)
         if obj_base is not None:
-            drift_mm = math.hypot(obj_base[0] - x, obj_base[1] - y) * 1000.0
-            if drift_mm > miss_tol:
+            (x, y), verdict, drift_mm = gg.descent_aim(
+                (x, y), (obj_base[0], obj_base[1]), miss_tol,
+                live_param("reaim_max_mm", gg.REAIM_MAX_MM))
+            if verdict == "refused":
                 reason = (f"object has moved {drift_mm:.0f}mm from the commanded "
-                          f"grasp point (tolerance {miss_tol:.0f}mm) — not descending")
+                          f"grasp point (tolerance {miss_tol:.0f}mm, re-aim limit "
+                          f"{live_param('reaim_max_mm', gg.REAIM_MAX_MM):.0f}mm) "
+                          f"— not descending")
                 rospy.logwarn("[arm] Contact NOT verified pre-descent: %s", reason)
                 return False, {"phase": "descent", "verified": False,
                                "reason": reason, "drift_mm": round(drift_mm, 1),
                                "descended": False}
+            if verdict == "reaimed":
+                rospy.logwarn("[arm] Object is %.0fmm from the commanded grasp point "
+                              "(base creep) — re-aiming the straight-in leg to "
+                              "(%.3f, %.3f)", drift_mm, x, y)
 
+        self._last_grasp_xy = (x, y)   # where the jaws really close (place() reuses it)
         self.scene.remove_target()     # the target becomes the grasp target
         # Re-settle at the standoff so the leg plans from a stable start state.
         self.arm.hold(0.6)
