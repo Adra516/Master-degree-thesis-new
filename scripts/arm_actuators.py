@@ -29,12 +29,19 @@ ARM_POSES = {
 }
 
 
+# A measured joint vector further than this (rad, any joint) from the last pose
+# we commanded is a bad read, not the arm: tracking error and gravity droop are
+# ~0.05 rad, so ~20° of disagreement means the read is garbage.
+HOLD_MAX_DEV = 0.35
+
+
 class ArmActuator:
 
     def __init__(self, robot_name, move_group):
         self.move_group = move_group
         self.pub = rospy.Publisher(f"/{robot_name}/arm_controller/command",
                                    JointTrajectory, queue_size=1, latch=True)
+        self.last_target = None    # last joint vector commanded, ARM_JOINTS order
 
     def send_joints(self, positions, move_time=2.0):
         """Joint-space move; blocks until it should have finished."""
@@ -44,6 +51,7 @@ class ArmActuator:
         pt.positions = positions
         pt.time_from_start = rospy.Duration(move_time)
         traj.points = [pt]
+        self.last_target = [float(v) for v in positions]
         self.pub.publish(traj)
         rospy.sleep(move_time + 0.2)
 
@@ -54,8 +62,30 @@ class ArmActuator:
         cannot fully reach under gravity (integral wind-up), so the arm keeps
         fighting and wobbles. Re-commanding the actual joints drives the
         position error to ~0 so it holds still.
+
+        The measured vector is checked against the last pose commanded first:
+        this command is a raw joint-space move with no collision checking, so a
+        bad read is not harmless — a read of all zeros was seen right before
+        pre-grasp, and re-commanding it swung the arm straight out to
+        (0.55, 0, 0.47), through the target. On a bad read, hold the last
+        commanded pose instead (what the controller was already pursuing).
         """
-        self.send_joints(self.move_group.get_current_joint_values(), move_time)
+        measured = [float(v) for v in self.move_group.get_current_joint_values()]
+        target = self.last_target
+        bad = (len(measured) != len(ARM_JOINTS)
+               or any(v != v or abs(v) == float("inf") for v in measured)
+               or (target is not None
+                   and max(abs(m - t) for m, t in zip(measured, target)) > HOLD_MAX_DEV))
+        if bad:
+            if target is None:
+                rospy.logwarn("[arm] hold skipped: implausible joint reading %s and "
+                              "nothing commanded yet to fall back on", measured)
+                return
+            rospy.logwarn("[arm] hold: implausible joint reading %s vs last commanded "
+                          "%s — holding the last commanded pose instead",
+                          [round(v, 3) for v in measured], [round(v, 3) for v in target])
+            measured = list(target)
+        self.send_joints(measured, move_time)
 
     def publish_trajectory(self, robot_traj):
         """Run a MoveIt RobotTrajectory by publishing it straight to the arm
@@ -76,6 +106,9 @@ class ArmActuator:
         jt = robot_traj.joint_trajectory
         if not jt.points:
             return 0.0
+        final = dict(zip(jt.joint_names, jt.points[-1].positions))
+        if all(j in final for j in ARM_JOINTS):
+            self.last_target = [float(final[j]) for j in ARM_JOINTS]
         self.pub.publish(jt)
         return jt.points[-1].time_from_start.to_sec()
 

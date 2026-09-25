@@ -206,8 +206,7 @@ class GraspExecutor:
         #    and gazebo_grasp_fix re-attaches on ANY new contact within one
         #    20 Hz update (grip_count_threshold=1 — required for the original
         #    grasp to attach at all).
-        settled = self.move_group.get_current_joint_values()
-        self.arm.send_joints(settled, move_time=0.8)
+        self.arm.hold(0.8)
         self.gripper.send(FINGER_OPEN, move_time=1.0)
         # Also drop the MoveIt attachment so future plans are clean.
         self.scene.detach()
@@ -282,8 +281,7 @@ class GraspExecutor:
             # Re-settle to zero the low-gain joints' position error and retry once
             # (collision-aware Cartesian coverage is start-state sensitive, same as
             # the descent's proven re-seat retry).
-            settled = self.move_group.get_current_joint_values()
-            self.arm.send_joints(settled, move_time=0.6)
+            self.arm.hold(0.6)
         rospy.logwarn("[arm] Pre-grasp collision-aware path low cov (%.0f%%) — "
                       "standoff may be blocked; proceeding to descent", frac * 100)
         return False
@@ -366,8 +364,7 @@ class GraspExecutor:
                       x, y, grasp_z, pre_xyz[0], pre_xyz[1], pre_xyz[2],
                       offset, plan["reason"])
 
-        settled = self.move_group.get_current_joint_values()
-        self.arm.send_joints(settled, move_time=0.8)
+        self.arm.hold(0.8)
 
         # Approach orientation: read from the current (grasp_ready) state —
         # level gripper, guarantees Cartesian IK feasibility.
@@ -409,8 +406,7 @@ class GraspExecutor:
                                       "the minimum safe offset (%.3fm) — re-seating "
                                       "and retrying unchanged", offset)
                     self.arm.send_joints(ready_pose, move_time=2.5)
-                    settled = self.move_group.get_current_joint_values()
-                    self.arm.send_joints(settled, move_time=0.8)
+                    self.arm.hold(0.8)
                     descent_ori = self.move_group.get_current_pose().pose.orientation
 
         info = {"phase": "pregrasp", "verified": bool(verdict), "reason": reason,
@@ -482,8 +478,7 @@ class GraspExecutor:
 
         self.scene.remove_target()     # the target becomes the grasp target
         # Re-settle at the standoff so the leg plans from a stable start state.
-        settled = self.move_group.get_current_joint_values()
-        self.arm.send_joints(settled, move_time=0.6)
+        self.arm.hold(0.6)
 
         # The grasp leg — ONE straight horizontal waypoint. Computed by MoveIt
         # (for the IK along the path) but EXECUTED by direct publish, not
@@ -516,8 +511,7 @@ class GraspExecutor:
             self.arm.send_joints(pg.get("ready_pose")
                                  or ([waist_angle] + list(GRASP_READY_POSE[1:])),
                                  move_time=2.5)
-            settled = self.move_group.get_current_joint_values()
-            self.arm.send_joints(settled, move_time=0.8)
+            self.arm.hold(0.8)
             descent_ori = self.move_group.get_current_pose().pose.orientation
             _wp = self._wp_for(descent_ori)   # rebind: waypoints carry the orientation
             if not self._approach_pregrasp(*pg["pre_xyz"], descent_ori):
@@ -527,8 +521,7 @@ class GraspExecutor:
                                "reason": "lost the verified standoff and could "
                                          "not re-establish it",
                                "descended": False}
-            settled = self.move_group.get_current_joint_values()
-            self.arm.send_joints(settled, move_time=0.8)
+            self.arm.hold(0.8)
         if fraction < 0.80:
             rospy.logwarn("[arm] Grasp path too short (%.0f%%) — aborting",
                           fraction * 100)
@@ -545,8 +538,7 @@ class GraspExecutor:
 
         # Actively HOLD the arm at its own measured pose before gripping — the
         # key stabilizer (see ArmActuator.hold).
-        settled = self.move_group.get_current_joint_values()
-        self.arm.send_joints(settled, move_time=0.8)
+        self.arm.hold(0.8)
 
         # GATE: with the jaws OPEN around the object at grasp height, check that
         # the object is actually between them BEFORE closing — the only moment
@@ -590,8 +582,7 @@ class GraspExecutor:
 
         # Re-hold at the new pose: the grasped object shifts the load, so
         # re-command the measured joints to absorb it before lifting.
-        settled = self.move_group.get_current_joint_values()
-        self.arm.send_joints(settled, move_time=0.6)
+        self.arm.hold(0.6)
 
         # Attach the object in the planning scene so the retreat avoids the table.
         # (W, L, H), the axis order this box has always been attached with.
@@ -604,8 +595,7 @@ class GraspExecutor:
         # shaking it. Straight up keeps the orientation constant, so the object
         # rides up level; the settle-hold stops the controllers fighting gravity.
         self._retreat_up(x, y, retreat_z, descent_ori)
-        settled = self.move_group.get_current_joint_values()
-        self.arm.send_joints(settled, move_time=1.2)
+        self.arm.hold(1.2)
 
         self._pending_grasp = None   # consumed
         return True, info
