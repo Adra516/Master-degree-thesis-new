@@ -26,3 +26,5 @@ float64 width                    # the object's width across the jaws at the gri
 float64 seat_turn                # how far the object will turn in the closing jaws
 int32 points                     # depth points on the target
 float64 frame_offset             # seconds between the requested stamp and the depth frame used
+float64 table_z                  # the surface the target stands on, MEASURED from this depth frame
+                                 # (NaN = could not be measured: the request's table_z stands)

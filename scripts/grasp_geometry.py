@@ -220,6 +220,12 @@ def contact_verdict(metrics, miss_tol_mm):
 # camera_clear and grasp_ready, ~1.7 mm/s afterwards), so the object really does
 # shift in base_link between planning and descent: 15-30 mm was seen every run.
 REAIM_MAX_MM = 45.0
+# Inside this the odometry reference and the commanded point are the same to within
+# its own noise, so the commanded point stands. NOT the contact tolerance: that one
+# (15 mm) is how far off the jaws may be and still close, and using it here left a
+# 7-10 mm aim error uncorrected on every live pick, though the reference was right
+# (its along-jaw reading matched ground truth to 0.4 mm).
+REAIM_XY_TOL_MM = 3.0
 
 
 def descent_aim(commanded_xy, object_xy, tol_mm, max_reaim_mm=REAIM_MAX_MM):
@@ -243,6 +249,35 @@ def descent_aim(commanded_xy, object_xy, tol_mm, max_reaim_mm=REAIM_MAX_MM):
     if drift <= max_reaim_mm:
         return (float(object_xy[0]), float(object_xy[1])), "reaimed", drift
     return (float(commanded_xy[0]), float(commanded_xy[1])), "refused", drift
+
+
+# The same tilt that shifts the object in x shifts it in HEIGHT. Measured with
+# ground truth: the bottle's base rose 31 mm relative to the arm between planning
+# and the grasp (3.8 deg nose-down at 0.47 m reach: dz = x*tilt = 31 mm, and
+# dx = -z*tilt = -30 mm — the two shifts are one rigid rotation). Re-aiming only
+# x/y left the pad centre 31 mm low: planned 198 mm up the bottle, actually
+# ~167 mm, on the 58-65 mm shoulder, so the jaws closed at a 64 mm gap.
+REAIM_Z_TOL_MM = 6.0       # arm sag is ~3 mm; inside this the verified height stands
+REAIM_Z_MAX_MM = 45.0
+
+
+def descent_height(commanded_z, object_z, tol_mm=REAIM_Z_TOL_MM, max_mm=REAIM_Z_MAX_MM):
+    """The height the straight-in leg should aim at.
+
+    commanded_z : the planned grasp height (base_link).
+    object_z    : the same grasp point on the object NOW (odometry-held, in the
+                  current tilted base frame), or None when unknown.
+    Returns (aim_z, verdict, dz_mm): "ok" (keep commanded), "reaimed" (follow the
+    object), or "refused" (shift too large to trust).
+    """
+    if object_z is None:
+        return float(commanded_z), "ok", 0.0
+    dz = (float(object_z) - float(commanded_z)) * 1000.0
+    if abs(dz) <= tol_mm:
+        return float(commanded_z), "ok", dz
+    if abs(dz) <= max_mm:
+        return float(object_z), "reaimed", dz
+    return float(commanded_z), "refused", dz
 
 
 def grasp_pose(target_xy, dims_hwl, table_z):

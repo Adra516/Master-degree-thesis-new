@@ -56,6 +56,45 @@ def object_points(points_base, table_z, center_xy=None, radius=None,
     return p[keep]
 
 
+def table_height(depth, bbox, K, T, center_xy, radius, guess_z, window=0.08,
+                 bin_h=0.004, min_points=300):
+    """Height (base_link z) of the surface the target stands on, MEASURED next to
+    it — or None when the picture cannot say.
+
+    The prior (zones.TABLE_SURFACE_Z) is a constant for one world file, and in
+    the sim it was 22 mm off the table the depth camera actually sees (0.250 vs
+    0.272 in base_link, checked against Gazebo ground truth: the camera's own
+    back-projection is accurate to a few mm). Everything the grasp derives from
+    "height above the table" (the search window, the anchor, the object's height)
+    inherited that error, so the jaws came down too low on every tall object.
+
+    The support surface is looked for in a strip of the depth image around and
+    below the target's box (the table in front of and beside it), keeping the
+    points within `window` of the prior and outside `radius` of the target. The
+    table is the LOWEST surface there with real support: objects standing on it
+    only add higher points, so the lowest well-populated height bin wins over the
+    fullest one, and its points' median gives the height."""
+    x1, y1, x2, y2 = (float(v) for v in bbox[:4])
+    bw, bh = x2 - x1, y2 - y1
+    region = [x1 - bw, y1 + 0.5 * bh, x2 + bw, y2 + 0.6 * bh]
+    cloud = transform(backproject(depth, region, K, pad=0), T)
+    if len(cloud) == 0:
+        return None
+    near = np.hypot(cloud[:, 0] - center_xy[0], cloud[:, 1] - center_xy[1]) <= radius
+    z = cloud[~near, 2]
+    z = z[np.abs(z - guess_z) < window]
+    if len(z) < min_points:
+        return None
+    edges = np.arange(guess_z - window, guess_z + window + bin_h, bin_h)
+    counts, edges = np.histogram(z, bins=edges)
+    solid = np.flatnonzero(counts >= max(0.3 * counts.max(), min_points / 4))
+    if len(solid) == 0:
+        return None
+    k = int(solid[0])
+    centre = 0.5 * (edges[k] + edges[k + 1])
+    return float(np.median(z[np.abs(z - centre) < 1.5 * bin_h]))
+
+
 def _extent(v, trim):
     v = np.sort(v)
     return v[trim], v[-1 - trim]

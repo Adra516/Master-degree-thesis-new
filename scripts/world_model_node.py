@@ -37,6 +37,7 @@ Try either half with nothing else running:
   rosservice call /locobot/task/get_object "target_name: 'bottle'"
 """
 import collections
+import copy
 import math
 import os
 import statistics
@@ -73,7 +74,7 @@ from target_odom_cache import TargetOdomCache
 from target_state import measured_position
 from world_model import WorldModel
 from zones import ARM_GRASP_DIST, TABLE_DEPTH_M, ZONE_BLOCKED, ZONE_GRASP_READY
-from locobot_prog.msg import DetectionArray, TargetState
+from locobot_prog.msg import CollisionBox, DetectionArray, TargetState
 from locobot_prog.srv import (ApproachTarget, ApproachTargetRequest,
                               ApproachTargetResponse, ExecuteGrasp, ExecutePlace,
                               ExecutePregrasp, GetObject, GetObjectResponse,
@@ -86,6 +87,9 @@ from locobot_prog.srv import (ApproachTarget, ApproachTargetRequest,
 # the robot has been standing still since it aligned.
 GRASP_MAX_LOCK_AGE = 3.0
 # A grasp counts as holding the object above this measured finger position.
+# A base tilt/creep smaller than this is left to the arm's own re-aim; a larger one
+# is worth re-taking the pre-grasp for (see TaskOrchestrator._settled_shift).
+SHIFT_FOLLOW_XY_MM = 10.0
 GRIP_HELD_MIN_WIDTH = 0.015
 
 
@@ -186,7 +190,7 @@ class WorldModelNode:
             return PlanGraspResponse(planned=False, reason=f"planner error: {e!r}")
 
     def _plan_grasp(self, req):
-        res = PlanGraspResponse(planned=False)
+        res = PlanGraspResponse(planned=False, table_z=float("nan"))
         frame, offset = self._depth_frame_near(req.stamp)
         res.frame_offset = offset if math.isfinite(offset) else -1.0
         if frame is None or self.K is None or self.camera_frame is None:
@@ -209,8 +213,18 @@ class WorldModelNode:
         dims = dims_hwl_from_size(s) if (s.x > 0 and s.y > 0 and s.z > 0) else None
         centre = (req.position.x, req.position.y)
         radius = gp.cut_radius(dims)
+        # The table the caller assumed is a constant; the one the camera sees is
+        # what the jaws must clear, so measure it (footprint.table_height) and plan
+        # in heights above THAT. Falls back to the caller's when it cannot be seen.
+        table_z = req.table_z
+        measured = footprint.table_height(depth, req.bbox, self.K, T, centre, radius, req.table_z)
+        if measured is not None:
+            res.table_z = measured
+            table_z = measured
+            rospy.loginfo("[world] table surface measured at z=%.3f (assumed %.3f, %+.0f mm)",
+                          measured, req.table_z, (measured - req.table_z) * 1000)
         cloud = footprint.transform(footprint.backproject(depth, req.bbox, self.K), T)
-        pts = footprint.object_points(cloud, req.table_z, center_xy=centre, radius=radius)
+        pts = footprint.object_points(cloud, table_z, center_xy=centre, radius=radius)
         bearing = math.atan2(centre[1], centre[0])
         # Opt-in per-band width dump: `rosparam set .../plan_grasp_debug_bands
         # true` to see the object's real measured width-by-height profile —
@@ -218,10 +232,10 @@ class WorldModelNode:
         # window), so seeing it is the fast way to answer "why did/didn't it
         # pick that band" without re-deriving it from a point-cloud dump.
         if rospy.get_param("~plan_grasp_debug_bands", False):
-            for b in footprint.bands(pts, req.table_z, bearing):
+            for b in footprint.bands(pts, table_z, bearing):
                 rospy.loginfo("[world] plan_grasp band: z=%4.0fmm n=%4d width=%5.1fmm",
                               b.z * 1000, b.n, b.width * 1000)
-        plan, diag = gp.plan_from_points(pts, req.table_z, bearing, dims,
+        plan, diag = gp.plan_from_points(pts, table_z, bearing, dims,
                                          max_dev=req.max_axis_deviation)
         res.points = diag["points"]
         if plan is None:
@@ -425,6 +439,7 @@ class TaskOrchestrator:
             rospy.logwarn("[task] compute_ik unavailable — using fixed grasp_dist")
 
         self._ground_truth = None     # Gazebo, only when a diag model is named
+        self._ref_point = None        # (x, y, z) in base_link of the point last cached in the odometry memory
 
         # ABSOLUTE names, not "~get_object"/"~navigate_to" — see this file's
         # module docstring for why the merge requires this.
@@ -435,7 +450,56 @@ class TaskOrchestrator:
     def _on_joint_state(self, msg):
         self._joint_state = msg
 
-    # ── The two tasks ────────────────────────────────────────────────────────
+    def _remember(self, action, position=None):
+        """target_memory MEASURE/SET that also keeps the cached point. REPROJECT
+        later returns where that same world point is in the CURRENT base frame;
+        the difference is how far the base has tilted/crept since (see
+        _follow_tilt)."""
+        kwargs = {"action": action}
+        if position is not None:
+            kwargs["position"] = position
+        r = self.target_memory(**kwargs)
+        if r.ok:
+            self._ref_point = (r.position.x, r.position.y, r.position.z)
+        return r
+
+    def _settled_shift(self):
+        """How far the target has moved in the CURRENT base frame since the plan
+        was measured, as (dx, dy, dz) metres — or None when it cannot be measured
+        or is too small to matter.
+
+        The arm's own weight tilts the base nose-down once it extends to the
+        standoff, and that tilt STAYS after the arm retracts (ground truth,
+        Gazebo): the bottle rose ~25 mm and moved ~14 mm back relative to the
+        arm, all of it between grasp_ready and the standoff — none at
+        grasp_ready. So it can only be measured once the arm is loaded, i.e.
+        after the first pre-grasp. The odometry memory holds the target fixed in
+        the world, so REPROJECT sees exactly that shift (camera-free, unlike a
+        fresh detection, which the arm now occludes).
+
+        Absorbing it here, by re-taking the pre-grasp at the corrected pose,
+        keeps the straight-in leg horizontal at a standoff that was verified at
+        the right height. Absorbing it in the leg instead meant a slope that
+        dragged the pads over the bottle's shoulder, or a raise that hit the IK
+        limits (73-77% path)."""
+        if self._ref_point is None:
+            return None
+        mem = self.target_memory(action=TargetMemoryRequest.REPROJECT)
+        if not mem.ok:
+            return None
+        ref, now = self._ref_point, (mem.position.x, mem.position.y, mem.position.z)
+        # Same verdicts the arm's own descent gate uses: "ok" = within tolerance,
+        # "refused" = too far to be a tilt/creep at all.
+        _, vxy, dxy_mm = gg.descent_aim(ref[:2], now[:2], SHIFT_FOLLOW_XY_MM, gg.REAIM_MAX_MM)
+        _, vz, dz_mm = gg.descent_height(ref[2], now[2], gg.REAIM_Z_TOL_MM, gg.REAIM_Z_MAX_MM)
+        if "refused" in (vxy, vz):
+            rospy.logwarn("[task] Target moved (%.0f mm sideways, %+.0f mm in height) since it "
+                          "was measured — too much to follow; the arm's own gate decides",
+                          dxy_mm, dz_mm)
+            return None
+        if vxy == "ok" and vz == "ok":
+            return None
+        return tuple(n - r for n, r in zip(now, ref))
 
     def _handle_navigate_to(self, req):
         with self._lock:
@@ -546,7 +610,7 @@ class TaskOrchestrator:
             rospy.loginfo("[task] Grasp position from the last scene: (%.3f, %.3f)", *pos)
         # Hold the target in odometry now, while the robot is still and the camera
         # clear: at grasp height the arm occludes the camera.
-        if not self.target_memory(action=TargetMemoryRequest.MEASURE).ok:
+        if not self._remember(TargetMemoryRequest.MEASURE).ok:
             rospy.logwarn("[task] Odometry target memory not primed (too few fresh "
                           "frames) — the contact check will be unverified")
         # Size: the far-vantage calibration is the most accurate source and the
@@ -556,28 +620,59 @@ class TaskOrchestrator:
                 else dims_hwl_from_size(st.lock_size) if st.locked else None)
         grasp_axis = s.target.grasp_axis or "along_x"
         tz = s.table.surface_z
-        obstacles = list(self.get_scene(target_name=target_name).obstacles)
-        table = box_to_msg(gg.table_box(tz, s.table.width or 0.80, s.table.depth or 0.40,
-                                        ctx["grasp_table_near_x"], pos[0]))
+        scene_obstacles = list(self.get_scene(target_name=target_name).obstacles)
+        # How far everything has moved in base_link since it was measured (the base
+        # tilts/creeps under the arm) — the collision scene must move with it.
+        tilt = (0.0, 0.0, 0.0)
+
+        def moved(box):
+            c = box.center
+            return CollisionBox(name=box.name, size=box.size,
+                                center=Point(c.x + tilt[0], c.y + tilt[1], c.z + tilt[2]))
+
+        def table_msg():
+            return box_to_msg(gg.table_box(tz, s.table.width or 0.80, s.table.depth or 0.40,
+                                           ctx["grasp_table_near_x"], pos[0]))
 
         def target_box():
-            return box_to_msg(gg.target_box(pos, dims, tz))
+            return box_to_msg(gg.target_box(pos, dims, tz + tilt[2]))
 
         # 6. PRE-GRASP — measured, and refused from a bad pose. A failed one
         #    retracts the arm, so the base can be corrected and it can retry once.
         # The plan is chosen once per attempt and reused for this attempt's
         # execute_grasp call below — NOT recomputed there (see _choose_plan).
-        plan_msg = self._choose_plan(st, pos, dims, grasp_axis, tz)
-        pre = None
-        for attempt in (1, 2):
-            pre = self.execute_pregrasp(plan=plan_msg, obstacles=[table] + obstacles,
-                                        target_box=target_box(), table_z=tz)
+        plan_msg, tz = self._choose_plan(st, pos, dims, grasp_axis, tz)
+        pre, failures, followed = None, 0, False
+        while True:
+            pre = self.execute_pregrasp(
+                plan=plan_msg, obstacles=[moved(table_msg())] + [moved(o) for o in scene_obstacles],
+                target_box=target_box(), table_z=tz + tilt[2])
             if pre.success:
-                rospy.loginfo("[task] Pre-grasp verified (attempt %d): %s", attempt,
+                rospy.loginfo("[task] Pre-grasp verified (%s): %s",
+                              "tilt-corrected" if followed else f"attempt {failures + 1}",
                               pre.message or "ok")
-                break
-            rospy.logwarn("[task] Pre-grasp NOT verified (attempt %d): %s", attempt, pre.message)
-            if attempt == 2:
+                # The arm is loaded now, so the base has tilted: is the target where
+                # this pre-grasp assumed? If not, take the pre-grasp again THERE (once).
+                d = None if followed else self._settled_shift()
+                if d is None:
+                    break
+                followed = True
+                tilt = (tilt[0] + d[0], tilt[1] + d[1], tilt[2] + d[2])
+                plan_msg.grasp_point.x += d[0]
+                plan_msg.grasp_point.y += d[1]
+                plan_msg.grasp_point.z += d[2]
+                pos = [round(pos[0] + d[0], 3), round(pos[1] + d[1], 3)]
+                self._ref_point = (self._ref_point[0] + d[0], self._ref_point[1] + d[1],
+                                   self._ref_point[2] + d[2])
+                rospy.loginfo("[task] Base tilted under the arm: target is (%+.0f, %+.0f, %+.0f)mm "
+                              "from where it was planned — re-taking the pre-grasp at "
+                              "(%.3f, %.3f, %.3f)", d[0] * 1000, d[1] * 1000, d[2] * 1000,
+                              plan_msg.grasp_point.x, plan_msg.grasp_point.y,
+                              plan_msg.grasp_point.z)
+                continue
+            failures += 1
+            rospy.logwarn("[task] Pre-grasp NOT verified (attempt %d): %s", failures, pre.message)
+            if failures == 2:
                 break
             rospy.sleep(1.2)
             r = self._approach(target_name, standoff, ctx["table_near_x"],
@@ -585,12 +680,14 @@ class TaskOrchestrator:
             if not r.success:
                 break
             pos = [round(r.target.x, 3), round(r.target.y, 3)]
-            self.target_memory(action=TargetMemoryRequest.MEASURE)   # re-prime here
+            self._remember(TargetMemoryRequest.MEASURE)   # re-prime here
+            # The base moved, so what was measured before no longer applies.
+            tilt, followed = (0.0, 0.0, 0.0), False
             # Refresh st too: a corrected base pose means a new camera pose, so
             # the depth plan's buffered frame/TF lookup must describe THIS pose,
             # not the pre-correction one the original st still holds.
             st = self.get_target(target_name=target_name).state
-            plan_msg = self._choose_plan(st, pos, dims, grasp_axis, tz)
+            plan_msg, tz = self._choose_plan(st, pos, dims, grasp_axis, tz)
             rospy.loginfo("[task] Re-positioned for pre-grasp retry: (%.3f, %.3f)", *pos)
         if not pre.success:
             return GetObjectResponse(
@@ -603,10 +700,18 @@ class TaskOrchestrator:
         # 7. GRASP — the arm occludes the camera now, so the contact check gets
         #    the object's position from the odometry memory.
         mem = self.target_memory(action=TargetMemoryRequest.REPROJECT)
-        obj_now = Point(round(mem.position.x, 3), round(mem.position.y, 3), 0.0) if mem.ok else None
+        # z = the grasp height on the object NOW: the planned height plus however
+        # far the cached point has moved vertically since it was cached (base
+        # tilt). NaN when unknown -> the arm then keeps the planned height.
+        obj_z = float("nan")
+        if mem.ok and self._ref_point is not None:
+            obj_z = round(plan_msg.grasp_point.z + (mem.position.z - self._ref_point[2]), 3)
+        obj_now = (Point(round(mem.position.x, 3), round(mem.position.y, 3), obj_z)
+                   if mem.ok else None)
         if obj_now is not None:
-            rospy.loginfo("[task] Contact check reference (odometry): (%.3f, %.3f)",
-                          obj_now.x, obj_now.y)
+            rospy.loginfo("[task] Contact check reference (odometry): (%.3f, %.3f)  "
+                          "grasp height %.3f (planned %.3f)",
+                          obj_now.x, obj_now.y, obj_z, plan_msg.grasp_point.z)
         else:
             rospy.logwarn("[task] No odometry reprojection — contact check unverified")
         g = self.execute_grasp(plan=plan_msg, object_now=obj_now or Point(),
@@ -661,7 +766,7 @@ class TaskOrchestrator:
     # ── Grasp planning ───────────────────────────────────────────────────────
 
     def _choose_plan(self, st, pos, dims, grasp_axis, tz):
-        """The grasp to execute: the depth-image planner's measurement of this
+        """(plan, table_z): the grasp to execute — the depth-image planner's measurement of this
         specific object's real shape when it can support one, else the bbox-
         centre baseline. Never worse than the baseline — a planner that is
         unavailable, declines, or errors just falls back silently. Called once
@@ -682,6 +787,13 @@ class TaskOrchestrator:
         else:
             rospy.loginfo("[task] Target not in the latest frame — using baseline")
 
+        # The table height the planner MEASURED beats the assumed constant — for the
+        # baseline fallback and for every box and height the caller derives from it.
+        if r is not None and math.isfinite(r.table_z) and r.table_z > 0.05:
+            if abs(r.table_z - tz) > 0.005:
+                rospy.loginfo("[task] Table surface z=%.3f measured (assumed %.3f)", r.table_z, tz)
+            tz = r.table_z
+
         if r is not None and r.planned:
             rospy.loginfo("[task] Grasp plan from the DEPTH PLANNER: %s "
                           "(width %.0fmm, turn %.0f°)", r.reason, r.width * 1000,
@@ -695,7 +807,7 @@ class TaskOrchestrator:
             # cruder estimate, a genuinely more accurate plan would disagree
             # with it by that same bias and look like the object had moved.
             try:
-                self.target_memory(action=TargetMemoryRequest.SET, position=plan_msg.grasp_point)
+                self._remember(TargetMemoryRequest.SET, plan_msg.grasp_point)
             except rospy.ServiceException as e:
                 rospy.logwarn("[task] Could not re-prime odometry cache: %s", e)
         else:
@@ -715,7 +827,7 @@ class TaskOrchestrator:
                 rospy.loginfo("[task] Grasp point (%s) vs GT '%s' (%.3f, %.3f): %.1fmm",
                               source, model, gt[0], gt[1],
                               math.hypot(g.x - gt[0], g.y - gt[1]) * 1000)
-        return plan_msg
+        return plan_msg, tz
 
     # ── Inverse reachability ─────────────────────────────────────────────────
 

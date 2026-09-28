@@ -84,7 +84,10 @@ def test_bottle_body():
     assert abs(plan["grasp_point"][2] - (TABLE_Z + diag["band_z"])) < 1e-9
     assert diag["quality"] > 0.97, diag["quality"]
     assert not plan["full_close"]
-    assert abs(plan["gripper_close"] - (diag["width"] / 2 - 0.006)) < 1e-9
+    # a uniform body: where the pads touch is the band's own width, to the noise
+    # of the widest band within the pad
+    assert 0.0 <= diag["contact_width"] - diag["width"] < 0.002
+    assert abs(plan["gripper_close"] - (diag["contact_width"] / 2 - gp.SQUEEZE)) < 1e-9
     assert plan["gripper_open"] == gg.FINGER_OPEN
 
 
@@ -160,10 +163,11 @@ def test_too_wide_for_the_jaws():
     assert "too wide" in diag["reason"], diag["reason"]
 
 
-def test_neck_above_the_grip_closes_fully():
+def test_close_squeezes_a_little_past_the_contact_never_fully():
     """Body 60 mm up to 95 mm, then a 24 mm neck: the grip band sits just
-    below the narrowing, so the jaws close fully rather than stopping at the
-    body's width (they could not follow the object if it slipped)."""
+    below the narrowing. The jaws are commanded SQUEEZE past where the pads
+    touch — not fully closed (10 mm past a 60 mm body's surface ejected the
+    object in the sim)."""
     c = (0.45, 0.0)
     body = sd.Cylinder(*c, 0.03, TABLE_Z, TABLE_Z + 0.095)
     neck = sd.Cylinder(*c, 0.012, TABLE_Z + 0.095, TABLE_Z + 0.25)
@@ -172,8 +176,32 @@ def test_neck_above_the_grip_closes_fully():
     assert plan is not None, diag
     assert diag["band_z"] < 0.095
     assert_width(diag["width"], 0.06)
-    assert plan["full_close"] and diag["tapered"]
-    assert plan["gripper_close"] == gg.FINGER_CLOSE
+    assert diag["tapered"] and not plan["full_close"]
+    assert abs(plan["gripper_close"] - (diag["contact_width"] / 2 - gp.SQUEEZE)) < 1e-9
+    assert plan["gripper_close"] > gg.FINGER_CLOSE + 0.005
+
+
+def test_close_target_is_measured_from_where_a_taper_is_touched():
+    """On a cone the pad touches at its LOWER edge, wider than the band the grip is
+    centred on, so the squeeze is counted from there. Counting it from the centre
+    band (the old rule, and a full close before that) commands the fingers
+    further in than the intended squeeze — 8-10 mm on the live bottle."""
+    c = (0.46, 0.0)
+    steps = [(0.0335, 0.000, 0.140)]
+    z, r = 0.140, 0.0335
+    while z < 0.250:
+        z1 = min(0.250, z + 0.005)
+        r = max(0.0135, r - 0.00117 * (z1 - z) / 0.005 * 1.0)   # ~0.234 mm/mm of diameter
+        steps.append((r, z, z1)); z = z1
+    shapes = [sd.Cylinder(*c, rr, TABLE_Z + lo, TABLE_Z + hi) for rr, lo, hi in steps]
+    corners = sd.corners(*c, 0.0335, 0.0335, TABLE_Z, TABLE_Z + 0.25)
+    plan, diag = plan_scene(shapes, corners, c, [0.25, 0.067, 0.067])
+    assert plan is not None, diag
+    assert diag["contact_width"] > diag["width"] + 0.003, (diag["contact_width"], diag["width"])
+    assert plan["gripper_close"] > gg.FINGER_CLOSE, plan["gripper_close"]
+    assert plan["gripper_close"] >= diag["contact_width"] / 2 - gp.SQUEEZE - 1e-9
+    interference = diag["contact_width"] / 2 - plan["gripper_close"]
+    assert interference <= gp.SQUEEZE + 1e-9, interference
 
 
 def test_neck_above_a_too_wide_body_is_reachable():
@@ -311,6 +339,91 @@ def test_bands_measure_width_across_the_approach():
 def _euler_z(q):
     x, y, z, w = q
     return (0.0, 0.0, math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
+
+
+def test_table_height_is_measured_not_assumed():
+    """The prior said 0.250; the table the camera sees is at 0.272 (the real
+    sim). The support surface next to the target must come out at the table's,
+    not the prior's — and not the target's own top or a neighbour's."""
+    real_z = 0.272
+    c = (0.50, 0.0)
+    table = sd.Table(real_z, 0.30, 1.00, -0.50, 0.50)
+    bottle = sd.Cylinder(*c, 0.034, real_z, real_z + 0.253)
+    neighbour = sd.Box(0.55, 0.14, 0.08, 0.08, real_z, real_z + 0.10)
+    T = sd.look_at(EYE, (c[0], c[1], real_z + 0.13))
+    depth = sd.render(T, [bottle, neighbour, table])
+    bbox = sd.bbox_of(T, sd.corners(*c, 0.034, 0.034, real_z, real_z + 0.253))
+    got = footprint.table_height(depth, bbox, sd.K, T, c, 0.068, guess_z=0.250)
+    assert got is not None
+    assert abs(got - real_z) < 0.004, (got, real_z)
+
+
+def test_table_height_declines_with_nothing_to_measure():
+    """No depth in the strip (or nothing near the prior): None, so the caller
+    keeps the prior instead of trusting an empty histogram."""
+    c = (0.50, 0.0)
+    T = sd.look_at(EYE, (c[0], c[1], 0.38))
+    empty = np.zeros((sd.H, sd.W))
+    assert footprint.table_height(empty, [280, 150, 360, 330], sd.K, T, c, 0.068, 0.25) is None
+    far_table = sd.Table(0.60, 0.30, 1.00, -0.50, 0.50)   # nowhere near the 0.25 +/- 0.08 prior
+    depth = sd.render(T, [far_table])
+    assert footprint.table_height(depth, [280, 150, 360, 330], sd.K, T, c, 0.068, 0.25) is None
+
+
+def test_planner_uses_the_true_table_when_the_prior_is_low():
+    """With the table really at 0.272 the planner must work in heights above THAT:
+    the same bottle, planned once with the true table height and once with the
+    0.250 prior, must be gripped at the same absolute height (the depth is what
+    decides it), and its band heights must be measured from the true table."""
+    real_z = 0.272
+    c = (0.45, 0.0)
+    steps = [(0.0333, 0.000, 0.165), (0.0310, 0.165, 0.170), (0.0290, 0.170, 0.175),
+             (0.0260, 0.175, 0.180), (0.0230, 0.180, 0.186), (0.0200, 0.186, 0.196),
+             (0.0180, 0.196, 0.233)]
+    shapes = [sd.Cylinder(*c, r, real_z + lo, real_z + hi) for r, lo, hi in steps]
+    corners = sd.corners(*c, 0.0333, 0.0333, real_z, real_z + 0.233)
+    table = sd.Table(real_z, 0.30, 1.00, -0.50, 0.50)
+    T = sd.look_at(EYE, (c[0], c[1], real_z + 0.1165))
+    depth = sd.render(T, shapes + [table])
+    bbox = sd.bbox_of(T, corners)
+    dims = [0.233, 0.066, 0.066]
+    cloud = footprint.transform(footprint.backproject(depth, bbox, sd.K), T)
+    bearing = math.atan2(c[1], c[0])
+    measured = footprint.table_height(depth, bbox, sd.K, T, c, gp.cut_radius(dims), 0.250)
+    assert measured is not None and abs(measured - real_z) < 0.004, measured
+    pts = footprint.object_points(cloud, measured, center_xy=c, radius=gp.cut_radius(dims))
+    plan, diag = gp.plan_from_points(pts, measured, bearing, dims)
+    assert plan is not None, diag
+    # the reported band height is above the TRUE table: absolute z = table + band
+    assert abs(plan["grasp_point"][2] - (measured + diag["band_z"])) < 1e-6
+    assert diag["band_z"] > 0.165
+
+
+def test_neck_grip_clears_the_shoulder_with_the_measured_aim_error():
+    """The bottle's width profile as the depth camera measured it live (heights above
+    the true table). At 178 mm the planner used to grip with a pad that reached
+    down to the 46-53 mm shoulder: room on paper (~10 mm/side) but none once the
+    7-10 mm aim error the contact check measures is taken off it — the lower finger
+    corner grazed the bottle. The chosen band must leave the aim error (plus slack)
+    on each side of the WHOLE pad."""
+    c = (0.46, 0.0)
+    profile = [(0.000, 0.0665), (0.130, 0.0665), (0.138, 0.0651), (0.143, 0.0630),
+               (0.148, 0.0587), (0.152, 0.0531), (0.158, 0.0459), (0.162, 0.0404),
+               (0.168, 0.0385), (0.173, 0.0380), (0.178, 0.0370), (0.182, 0.0353),
+               (0.188, 0.0348), (0.192, 0.0331), (0.198, 0.0332), (0.202, 0.0317),
+               (0.208, 0.0300), (0.212, 0.0295), (0.218, 0.0280), (0.222, 0.0271),
+               (0.228, 0.0265), (0.253, 0.0265)]
+    shapes = []
+    for (z0, w0), (z1, _) in zip(profile, profile[1:]):
+        shapes.append(sd.Cylinder(*c, w0 / 2.0, TABLE_Z + z0, TABLE_Z + z1))
+    corners = sd.corners(*c, 0.0333, 0.0333, TABLE_Z, TABLE_Z + 0.253)
+    plan, diag = plan_scene(shapes, corners, c, [0.253, 0.067, 0.067])
+    assert plan is not None, diag
+    lower_edge = diag["band_z"] - gp.PAD_HALF - gp.PAD_MARGIN
+    widest_under_pad = max(w for (z, w) in profile if z >= lower_edge - 0.005) if lower_edge > 0 else 0.0665
+    room = (gp.JAW_MAX - widest_under_pad) / 2.0
+    assert diag["band_z"] >= 0.185, ("still gripping low, on the shoulder", diag["band_z"])
+    assert room >= 0.015, ("less room than the aim error needs", room, diag["band_z"])
 
 
 if __name__ == "__main__":

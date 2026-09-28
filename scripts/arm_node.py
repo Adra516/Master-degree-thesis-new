@@ -189,7 +189,8 @@ class ArmNode:
 
     def _execute_grasp(self, req):
         plan = _plan_to_dict(req.plan)
-        obj_now = (req.object_now.x, req.object_now.y) if req.object_now_valid else None
+        obj_now = ((req.object_now.x, req.object_now.y, req.object_now.z)
+                   if req.object_now_valid else None)
         ok, info = self.executor.grasp(plan, obj_now)
         return ExecuteGraspResponse(
             success=ok,

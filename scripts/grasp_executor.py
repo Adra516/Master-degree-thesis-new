@@ -152,7 +152,13 @@ class GraspExecutor:
                                      f"verified pre-grasp — re-run execute_pregrasp"}
         # Compare at the grasp height: the jaws are level there, so only the
         # in-plane geometry is meaningful for the straddle test.
-        obj_base = [obj_now[0], obj_now[1], pg["grasp_z"]] if obj_now is not None else None
+        obj_base = None
+        if obj_now is not None:
+            # z is the grasp height at the object's CURRENT position when the caller
+            # knows it (NaN / absent / non-positive = unknown -> no height re-aim).
+            oz = obj_now[2] if len(obj_now) > 2 else float("nan")
+            obj_base = [obj_now[0], obj_now[1],
+                        oz if math.isfinite(oz) and oz > 0.05 else plan["grasp_point"][2]]
         ok, info = self._do_descent(plan, obj_base)
         return self._outcome(ok, pg.get("gw_before", self.gripper.position), info)
 
@@ -257,6 +263,12 @@ class GraspExecutor:
         if success:
             rospy.loginfo("[arm] Grasp succeeded (gripper=%.1fmm  plan_ok=%s  grip_check=%s)",
                           gw_m * 1000, ok, gripper_closed_on_object)
+            if gw_m > FINGER_OPEN - 0.008:
+                rospy.logwarn("[arm] Jaws closed only %.0fmm per finger from fully open "
+                              "(a %.0fmm grip). Fine for a wide object, but if the planned "
+                              "grip width was narrower than that the jaws are on a wider "
+                              "part than planned — check the grasp height",
+                              (FINGER_OPEN - gw_m) * 1000, gw_m * 2000)
         else:
             data.setdefault("reason", "MoveIt planning or execution failed")
             rospy.logwarn("[arm] Grasp failed (gripper=%.1fmm  plan_ok=%s): %s",
@@ -289,6 +301,24 @@ class GraspExecutor:
         rospy.logwarn("[arm] Pre-grasp collision-aware path low cov (%.0f%%) — "
                       "standoff may be blocked; proceeding to descent", frac * 100)
         return False
+
+    def _explain_short_leg(self, legs, cart_plan, fraction):
+        """A short straight-in leg with collision checking OFF is an IK failure
+        along the path, not an obstacle — so log what the arm looked like and how
+        the same leg fares in variants, to say WHICH ingredient it is (the start
+        state, the raise, or the height) the next time it happens."""
+        try:
+            now = [round(v, 3) for v in self.move_group.get_current_joint_values()]
+            pts = cart_plan.joint_trajectory.points
+            end = [round(v, 3) for v in pts[-1].positions] if pts else None
+            last = legs[-1]
+            _, f_on = self.move_group.compute_cartesian_path(legs, 0.005, True)
+            rospy.logwarn("[arm] Short leg (%.0f%%, ends at z=%.3f): joints now %s, partial "
+                          "path ends at %s (roll joints near +-pi = wrist singularity), "
+                          "same leg with collisions ON: %.0f%%", fraction * 100,
+                          last.position.z, now, end, f_on * 100)
+        except Exception as e:      # diagnostics must never break a grasp
+            rospy.logwarn("[arm] could not explain the short leg: %s", e)
 
     def _wp_for(self, ori):
         """Waypoint factory bound to a fixed EE orientation."""
@@ -480,11 +510,12 @@ class GraspExecutor:
         miss_tol = live_param("contact_miss_tol_mm", CONTACT_MISS_TOL_MM)
         if obj_base is not None:
             (x, y), verdict, drift_mm = gg.descent_aim(
-                (x, y), (obj_base[0], obj_base[1]), miss_tol,
+                (x, y), (obj_base[0], obj_base[1]),
+                live_param("reaim_xy_tol_mm", gg.REAIM_XY_TOL_MM),
                 live_param("reaim_max_mm", gg.REAIM_MAX_MM))
             if verdict == "refused":
                 reason = (f"object has moved {drift_mm:.0f}mm from the commanded "
-                          f"grasp point (tolerance {miss_tol:.0f}mm, re-aim limit "
+                          f"grasp point (re-aim limit "
                           f"{live_param('reaim_max_mm', gg.REAIM_MAX_MM):.0f}mm) "
                           f"— not descending")
                 rospy.logwarn("[arm] Contact NOT verified pre-descent: %s", reason)
@@ -495,6 +526,39 @@ class GraspExecutor:
                 rospy.logwarn("[arm] Object is %.0fmm from the commanded grasp point "
                               "(base creep) — re-aiming the straight-in leg to "
                               "(%.3f, %.3f)", drift_mm, x, y)
+
+        # Height, by the same reasoning: the base tilts nose-down as the arm
+        # extends, which lifts the object relative to the arm as well as moving
+        # it back (one rigid rotation). Measured: +31 mm, which left the pad
+        # centre ~167 mm up a bottle planned at 198 mm — on its 58-65 mm shoulder.
+        # The leg goes from the standoff (old height) straight to the re-aimed
+        # point as ONE line, a slight slope. Raising at the standoff first and then
+        # advancing looked cleaner but failed live (73-77% coverage): at the raised
+        # pose the wrist angle is ~0, a wrist singularity where forearm_roll and
+        # wrist_rotate line up, so IK swings both to +-2.85 rad and the path stops
+        # at the joint limit. The direct line to the same point got 100%. The jaws
+        # only reach the object in the last ~20 mm, where the line is within a few
+        # mm of the final height.
+        if obj_base is not None:
+            aim_z, zverdict, dz_mm = gg.descent_height(
+                grasp_z, obj_base[2], live_param("reaim_z_tol_mm", gg.REAIM_Z_TOL_MM),
+                live_param("reaim_z_max_mm", gg.REAIM_Z_MAX_MM))
+            if zverdict == "refused":
+                reason = (f"object height has shifted {dz_mm:+.0f}mm from the planned "
+                          f"grasp height (limit "
+                          f"{live_param('reaim_z_max_mm', gg.REAIM_Z_MAX_MM):.0f}mm) "
+                          f"— not descending")
+                rospy.logwarn("[arm] Contact NOT verified pre-descent: %s", reason)
+                return False, {"phase": "descent", "verified": False, "reason": reason,
+                               "dz_mm": round(dz_mm, 1), "descended": False}
+            if zverdict == "reaimed":
+                rospy.logwarn("[arm] Object is %+.0fmm in height from the planned grasp "
+                              "point (base tilt) — raising the jaws %.3f -> %.3f",
+                              dz_mm, grasp_z, aim_z)
+                grasp_z = aim_z
+                retreat_z = grasp_z + 0.15
+                self._last_grasp_z = grasp_z
+            obj_base = [obj_base[0], obj_base[1], grasp_z]
 
         self._last_grasp_xy = (x, y)   # where the jaws really close (place() reuses it)
         self.scene.remove_target()     # the target becomes the grasp target
@@ -515,12 +579,14 @@ class GraspExecutor:
         # long, and grasp_z is floor-clamped well above the table.
         cart_plan, fraction = None, 0.0
         for attempt in (1, 2):
+            legs = [_wp(x, y, grasp_z)]
             cart_plan, fraction = self.move_group.compute_cartesian_path(
-                [_wp(x, y, grasp_z)], 0.005, False)
+                legs, 0.005, False)
             rospy.loginfo("[arm] Grasp path coverage: %.0f%% (attempt %d)",
                           fraction * 100, attempt)
             if fraction >= 0.80:
                 break
+            self._explain_short_leg(legs, cart_plan, fraction)
             if attempt == 2:
                 break
             # IK failed partway from this start state. Re-seat, then RE-ESTABLISH
@@ -596,8 +662,8 @@ class GraspExecutor:
         self.last_close_target = plan["gripper_close"]
         rospy.loginfo("[arm] Gripper close target=%.1fmm (%s)",
                       plan["gripper_close"] * 1000,
-                      "tapered/unknown -> full close" if plan["full_close"]
-                      else "prismatic -> adaptive")
+                      "unmeasured width -> full close" if plan["full_close"]
+                      else "a squeeze past the contact")
         self.gripper.send(plan["gripper_close"], move_time=2.0)
         rospy.sleep(0.6)   # let the grip settle and grasp-fix attach
 

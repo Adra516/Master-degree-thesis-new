@@ -70,13 +70,28 @@ PAD_HALF = 0.0145
 PAD_MARGIN = 0.008
 # Per-side clearance at which more room stops mattering. A tight fit is easy to
 # miss by a few mm of lateral error (one finger lands on the object and pushes
-# it), so clearance is the main preference after seating; ~10 mm/side is what
-# earlier sessions found workable on this bottle.
-CLEARANCE_FULL = 0.010
-# Tapered: the object narrows just above the grip. A close that stops at the
-# grip band's width cannot follow the object if it slips down into the jaws,
-# so the jaws close fully instead (what the baseline does for a bottle).
-TAPER_LOOKUP = 0.02                 # compare the width this far above the grip...
+# it), so clearance is the main preference after seating. It has to cover the
+# aim error the contact check actually measured on live picks — the object sat
+# 5.8, 8.1, 8.2 and 9.4 mm off the jaws' centre line (the along-jaw value, which
+# matched Gazebo ground truth to 0.4 mm) — plus what the grip height cannot
+# promise: the ~3 mm sag and the pad's lower edge. 10 mm/side (the earlier
+# value) was consumed by the aim error alone: the planner took a band whose pad
+# reached down to the bottle's shoulder with ~10 mm to spare on paper, and the
+# lower finger corner grazed it in the real run. 18 = 10 + 8.
+CLEARANCE_FULL = 0.018
+# How far beyond the surface the fingers are commanded (per finger). The jaws stop
+# at the object; the command only sets the squeeze. Measured on live bottle picks
+# at a fixed grip height: ~4-6 mm held it upright; ~8-10 mm made the pads walk
+# down the neck's taper to the 52-60 mm shoulder (gripper read 26-28 mm/finger) or
+# shoved it out of the jaws (9 mm = empty). But on a genuine cone the SAME 6 mm
+# does not mean the same thing at every band: two live picks on bands 4 mm apart
+# (198 mm, 202 mm) put the fingers 6.8 mm and 2.8 mm short of a 6 mm target —
+# the second one, with barely any margin between the measured contact and the
+# commanded target, tipped the bottle >10 deg and dragged it 38 mm while
+# closing. 4 mm is the safe end of that measured range; it still holds (measured
+# clean: 0 deg / 0 mm disturbance at 198 mm) with more of the margin behind it.
+SQUEEZE = 0.004
+TAPER_LOOKUP = 0.02                 # diagnostic only: compare the width this far above the grip...
 TAPER_DROP = 0.005                  # ...narrower by more than this = tapered
 DEV_STEP = math.radians(2.0)
 CUT_MARGIN = 0.02                   # the world model's horizontal position error, roughly
@@ -231,6 +246,12 @@ def plan_from_points(points, table_z, bearing, dims_hwl, depth_hint=None, max_de
                 rejected.append(f"{b.z*1000:.0f}mm: {w*1000:.0f}mm too wide for the jaws")
                 continue
             env_width = w * env_ratio
+            # Where the pads will actually touch: the widest the object is anywhere
+            # within the pad's own height (not the extra margin) — on a taper that
+            # is the pad's lower edge, wider than the band the grip is centred on.
+            contact_ratio = max(1.0, max(o.width for o in bands
+                                         if abs(o.z - b.z) <= PAD_HALF + 0.0025)
+                                / max(b.width, 1e-6))
             if env_width + 2 * SIDE_CLEARANCE > JAW_MAX:
                 rejected.append(f"{b.z*1000:.0f}mm: jaw pad would overlap "
                                 f"{env_width*1000:.0f}mm of the object")
@@ -241,13 +262,13 @@ def plan_from_points(points, table_z, bearing, dims_hwl, depth_hint=None, max_de
                 continue
             score = _band_score(cand, b.z, z_ref, env_width)
             if best is None or score > best[0]:
-                best = (score, b, cand, centre, depth)
+                best = (score, b, cand, centre, depth, w * contact_ratio)
     if best is None:
         diag["reason"] = ("no band in %.0f-%.0f mm fits the jaws" % (z_lo * 1000, z_hi * 1000)
                           + (f" ({rejected[0]})" if rejected else " (no points there)"))
         return None, diag
 
-    score, band, cand, xy, depth = best
+    score, band, cand, xy, depth, contact_width = best
     width = cand["width"]
     z = table_z + band.z
 
@@ -256,8 +277,8 @@ def plan_from_points(points, table_z, bearing, dims_hwl, depth_hint=None, max_de
     yaw = bearing + cand["dev"]
     quat = [float(v) for v in rotations.quaternion_from_euler(0.0, 0.0, yaw)]
     open_pos = float(np.clip(width / 2.0 + 0.022, gg.FINGER_CLOSE + 0.008, gg.FINGER_OPEN))
-    close_pos = gg.FINGER_CLOSE if tapered else float(
-        np.clip(width / 2.0 - 0.006, gg.FINGER_CLOSE, gg.FINGER_OPEN - 0.005))
+    close_pos = float(np.clip(contact_width / 2.0 - SQUEEZE, gg.FINGER_CLOSE,
+                              gg.FINGER_OPEN - 0.005))
     size = dims_hwl if dims_hwl is not None else gg.UNKNOWN_OBJECT_DIMS
 
     plan = {"valid": True,
@@ -267,12 +288,13 @@ def plan_from_points(points, table_z, bearing, dims_hwl, depth_hint=None, max_de
             "grasp_orientation": quat,
             "standoff_offset": gg.PREGRASP_STANDOFF_OFFSET,
             "standoff_offset_min": gg.min_standoff_offset(dims_hwl),
-            "gripper_open": open_pos, "gripper_close": close_pos, "full_close": tapered,
+            "gripper_open": open_pos, "gripper_close": close_pos, "full_close": False,
             "object_size": [float(size[2]), float(size[1]), float(size[0])]}
     left = np.append(cand["left"], z)
     right = np.append(cand["right"], z)
     diag.update(width=width, band_z=band.z, band_points=band.n, quality=cand["quality"],
                 turn=cand["turn"], axis_dev=cand["dev"], tapered=tapered,
+                contact_width=contact_width,
                 visible_depth=band.a_back - band.a_front, depth_used=depth,
                 contact_left=left.tolist(), contact_right=right.tolist(),
                 anchor_z=z_ref, score=score)

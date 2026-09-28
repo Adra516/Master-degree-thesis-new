@@ -60,7 +60,11 @@ class CollisionScene:
         self._obstacles = []
 
     def add_target(self, box):
-        """The target as an obstacle, for the pre-grasp phase."""
+        """The target as an obstacle, for the pre-grasp phase. Replaces any earlier
+        one (the pre-grasp can be re-taken at a corrected pose)."""
+        if self._target_in_scene:
+            self.scene.remove_world_object(TARGET_OBSTACLE)
+            rospy.sleep(0.15)
         self._add(box)
         self._target_in_scene = True
         rospy.loginfo("[arm] Target-as-obstacle added (pre-grasp): xy=(%.3f,%.3f) "
