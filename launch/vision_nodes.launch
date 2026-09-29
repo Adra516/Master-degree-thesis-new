@@ -14,12 +14,13 @@
   <!-- YOLO args -->
   <arg name="yolo_model"          default="/home/adrana/th_ws/YOLO-3D/yolo11n.pt"/>
   <arg name="yolo_process_rate"   default="5.0"/>
-  <!-- 'airplane'/'book' added for the tissue-box grasp target (replaces the
-       plain wood cube — undetectable, no texture) and 'cell phone' for the
-       coke-can scene object: empirically measured class labels (see
-       locobot-grasp-pipeline-state memory 2026-07-XX), same pragmatic
-       class-name-mismatch pattern as bottle->'vase'. -->
-  <arg name="yolo_target_classes" default="['bottle','vase','cup','person','dining table','airplane','book','cell phone']"/>
+  <!-- Empty by default: yolo_detection_node then derives its class filter
+       automatically from every measured yolo_labels entry in
+       config/objects.yaml (plus "person", always kept for obstacle safety —
+       see that node's SCENE_CLASSES). Adding a graspable object now only
+       needs an entry in the catalog. Pass an explicit list here only to
+       test an ad hoc class the catalog doesn't have yet. -->
+  <arg name="yolo_target_classes" default="[]"/>
   <arg name="yolo_conf_threshold" default="0.10"/>
   <arg name="yolo_publish_image"  default="true"/>
 

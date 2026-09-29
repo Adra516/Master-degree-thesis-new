@@ -1,6 +1,7 @@
 import ast, json, os, sys, time
 import numpy as np
 import message_filters
+import rospkg
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from sensor_msgs.msg import CameraInfo, Image
@@ -9,7 +10,13 @@ import tf2_ros
 import tf2_geometry_msgs
 from geometry_msgs.msg import PointStamped
 
-# YOLO3D utilities — set up before importing 
+# See arm_node.py's identical comment: roslaunch execs this file through a
+# devel/lib/ wrapper, so __file__'s own directory must be added explicitly
+# for the flat sibling import below (resolver.py) to resolve.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from resolver import ObjectCatalog
+
+# YOLO3D utilities — set up before importing
 _YOLO3D_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "YOLO3D"))
 if _YOLO3D_DIR not in sys.path:
@@ -18,42 +25,61 @@ if _YOLO3D_DIR not in sys.path:
 from bbox3d_utils import BBox3DEstimator, DEFAULT_DIMS    # DEFAULT_DIMS, _backproject_point, _estimate_orientation
 from detection_model import ObjectDetector  # YOLOv11 + multi-object tracking
 
+# Detections of these classes are always published (never filtered out by
+# target_classes below) — real-world obstacle/scene classes that matter
+# regardless of what's being picked. "person" is not in config/objects.yaml
+# (it's never a pick target), but a real person-shaped obstacle nearby still
+# has to reach the world model so it can be avoided.
+SCENE_CLASSES = {"dining table", "table", "person"}
+
 
 class YoloDetectionNode:
-    # target_object -> its empirically-measured YOLO class-label alias(es).
-    # is_target = (class_name == target_object OR class_name in aliases), 
-    # so an alias for the WRONG target silently steals detections from whatever
-    # is actually configured — e.g. bottle's alias "vase" was kept active
-    # even while target_object='airplane' (the tissue-box target), so the
-    # bottle (detected far more reliably) kept winning "is_target" over the
-    # intended box. Auto-deriving aliases FROM target_object makes that
-    # cross-contamination structurally impossible: only the currently
-    # configured target's own alias(es) are ever active.
-    _ALIAS_MAP = {
-        "bottle":   ["vase"],
-        "cancoke": ["cell phone"],
-        "teabox": ["remote"], #remote
-        "ball": ["sport ball"],
-    }
 
     def __init__(self):
         self.robot_name = rospy.get_param("~robot_name",    "locobot")
         self.conf_thresh = float(rospy.get_param("~conf_threshold", 0.10))
         self.process_rate = float(rospy.get_param("~process_rate", 2.0))
         target_object = rospy.get_param("~target_object", "bottle")
-        raw_classes = rospy.get_param("~target_classes", [])
 
+        # config/objects.yaml is the one place that maps a graspable object to
+        # its empirically-measured YOLO class label(s) — see that file's own
+        # header. Previously this node kept a SEPARATE, hand-maintained copy of
+        # that mapping (_ALIAS_MAP) plus an INDEPENDENT, separately-hand-
+        # maintained target_classes launch list (the actual publish filter,
+        # below) that had to be kept in sync with it by hand. Forgetting to add
+        # a newly-catalogued object's label to that second list silently
+        # dropped every detection of it before it was ever published — it then
+        # looked exactly like "not detected"/"never locks", with no error
+        # anywhere, because nothing downstream ever saw it at all.
+        default_catalog = rospkg.RosPack().get_path("locobot_prog") + "/config/objects.yaml"
+        catalog = ObjectCatalog.from_yaml(rospy.get_param("~catalog", default_catalog))
+
+        raw_classes = rospy.get_param("~target_classes", [])
         if isinstance(raw_classes, str):
             raw_classes = ast.literal_eval(raw_classes)
-        self.target_classes = [c.lower() for c in raw_classes]
+        if raw_classes:
+            # Explicit override (e.g. quick ad hoc testing of a class not yet
+            # in the catalog) — used exactly as given.
+            self.target_classes = [c.lower() for c in raw_classes]
+        else:
+            # The normal case: every measured label of every catalogued
+            # object, automatically — adding an object to config/objects.yaml
+            # is now enough on its own; nothing here needs editing too.
+            labels = set()
+            for key in catalog.objects:
+                labels |= catalog.labels(key)
+            self.target_classes = sorted(labels)
         self.target_object  = target_object.lower()
 
-        # Always derived FROM target_object, never a fixed/overridable list —
-        # a fixed list would apply to whichever target is active regardless of
-        # which one was actually requested (see _ALIAS_MAP's own comment: this
-        # is what let the bottle keep winning "is_target" over the box).
-        self.target_aliases = {a.lower() for a in
-                               self._ALIAS_MAP.get(self.target_object, [])}
+        # Which of that target's own labels to highlight as "the" target in
+        # this node's own log line (_process, below) — cosmetic only, not used
+        # for identity resolution downstream (that's resolver.CatalogResolver's
+        # job, run again independently in world_model.py against the same
+        # catalog). A name not in the catalog (e.g. a raw YOLO class typed
+        # directly, "vase") gets no aliases, matching CatalogResolver.matches's
+        # own fallback: the name must then equal the label exactly.
+        catalog_key = catalog.key_for_name(self.target_object)
+        self.target_aliases = catalog.labels(catalog_key) if catalog_key else set()
 
         ns = self.robot_name
 
@@ -124,9 +150,6 @@ class YoloDetectionNode:
         # ObjectDetector.detect() → (annotated_bgr, [[bbox, score, cls_id, obj_id], ...])
         annotated, raw_dets = self.detector.detect(bgr, track=True)
         detections = []
-
-        # Classes always published regardless of target_classes (needed for scene modelling)
-        SCENE_CLASSES = {"dining table", "table"}
 
         for bbox, score, cls_id, obj_id in raw_dets:
             class_name = self.detector.model.names[cls_id].lower()
