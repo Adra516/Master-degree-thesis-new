@@ -56,6 +56,23 @@ def test_a_plausible_uncatalogued_object_is_untouched():
     assert math.isclose(_box_for(m, "cup")["sx"], 0.08 + 0.04)
 
 
+def test_surface_label_is_not_a_generic_obstacle():
+    """Regression for obs_dining table_0: the table is already modelled by its
+    own dedicated table_box()/TableEstimate, and a surface label's size is
+    deliberately NOT capped by _plausible_size (needed so the table keeps its
+    real, large footprint there) — so feeding it through obstacle_boxes() too
+    can produce a second, huge, uncapped phantom copy of the table. Measured
+    live: 0.51 x 0.51 x 0.21 m, centred in the approach corridor, 0% pre-grasp
+    Cartesian coverage. A "dining table" detection must not appear in
+    obstacles() at all, whatever its reported size."""
+    m = _model()
+    m.update([_det("dining table", (0.562, 0.0, 0.336), (0.211, 0.511, 0.511)),
+              _det("cell phone", (0.45, 0.20, 0.30), (0.096, 0.055, 0.055))], 0.0, None)
+    names = [b["name"] for b in m.obstacles()]
+    assert not any("dining table" in n or "table" in n for n in names), names
+    assert any("cell phone" in n for n in names), names   # real obstacles still appear
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

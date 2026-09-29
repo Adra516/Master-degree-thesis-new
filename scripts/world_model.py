@@ -204,12 +204,27 @@ class WorldModel:
                      len(src), from_cache, visible)
 
     def obstacles(self):
-        """Collision boxes for every NON-target object in the latest frame, sized
-        from the calibration where available (a close-range frame is the worse
-        size estimate, by the same measurement that motivates the calibration)."""
+        """Collision boxes for every NON-target, NON-surface object in the
+        latest frame, sized from the calibration where available (a
+        close-range frame is the worse size estimate, by the same measurement
+        that motivates the calibration).
+
+        Surface labels (the table) are excluded here, not just left uncapped:
+        the table already has its own dedicated collision box (table_box(),
+        built from TableEstimate). _plausible_size() deliberately does NOT cap
+        a surface detection's size — capping it would corrupt the table
+        model's own real, large footprint — but that same exemption means an
+        imprecise "dining table" detection fed through here as a genericobject
+        obstacle instead can come out as a huge, wrongly-centred phantom box
+        (measured live: 0.51 x 0.51 x 0.21 m, centred squarely in the
+        approach corridor) that blocks the whole pre-grasp path — a duplicate
+        of the table that's also uncapped, the worst of both."""
+        surface = self.catalog.surface_labels()
         dets = []
         for d in self.latest:
             label = normalize(d.get("class_name", ""))
+            if label in surface:
+                continue
             cd = self.calibrated_dims(self.calib_key(label)) if label else None
             d2 = dict(d, is_target=self.resolver.matches(self.target_name, d))
             if cd is not None:
