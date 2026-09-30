@@ -22,10 +22,12 @@ import math
 
 import numpy as np
 import rospy
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Pose, PoseStamped
+from moveit_msgs.srv import GetPositionIK, GetPositionIKRequest
+from sensor_msgs.msg import JointState
 
 import grasp_geometry as gg
-from arm_actuators import CAMERA_CLEAR_POSE, GRASP_READY_POSE
+from arm_actuators import ARM_JOINTS, CAMERA_CLEAR_POSE, GRASP_READY_POSE
 from gain_scheduler import GainScheduler
 from grasp_geometry import FINGER_CLOSE, FINGER_OPEN
 
@@ -46,6 +48,23 @@ PENDING_GRASP_TTL_S = 30.0
 REACH_MAX = 0.52
 REACH_MIN = 0.33
 
+# The WidowX-250s wrist (forearm_roll, wrist_angle, wrist_rotate) is spherical:
+# for ANY reachable end-effector pose there are two joint-space solutions,
+# related by forearm_roll += pi, wrist_angle negated, wrist_rotate -= pi — same
+# position and orientation. compute_cartesian_path seeds each waypoint's IK
+# from the previous one for continuity, so a leg whose straight-line path
+# happens to pass near the wrist singularity (wrist_angle ~ 0, where
+# forearm_roll/wrist_rotate become numerically degenerate) can drift onto the
+# far branch mid-path even though it started centered — measured live: a
+# centered solution is always under ~1.0 rad, the far one always beyond ~2.1
+# rad, for every logged case (see the session's IK-seed probe). Once on the far
+# branch the arm sits close to forearm_roll's own hard limit (+-3.142) under
+# gains deliberately left very low there (p=5, i=0, d=0 — the vendor value;
+# raising it once caused violent oscillation), which is where the "implausible
+# joint reading" hold() warnings and the grip destabilising right after closing
+# have both been traced to.
+WRIST_FLIP_THRESHOLD = 1.5
+
 
 def live_param(name, default):
     return float(rospy.get_param(f"~{name}", default))
@@ -61,6 +80,9 @@ class GraspExecutor:
         self.gripper = gripper             # arm_actuators.Gripper
         self.scene = scene                 # collision_scene.CollisionScene
         self.diag = diag                   # arm_diagnostics.GraspDiagnostics
+        # Only for _unwind_wrist_if_flipped's own re-solve of the arm's CURRENT
+        # pose — everything else here already goes through move_group.
+        self._ik_srv = rospy.ServiceProxy(f"/{robot_name}/compute_ik", GetPositionIK)
 
         self.table_surface_z = 0.25
         self._last_grasp_z = None         # EE height of the last grasp (for place)
@@ -336,6 +358,56 @@ class GraspExecutor:
         except Exception as e:      # diagnostics must never break a grasp
             rospy.logwarn("[arm] could not explain the short leg: %s", e)
 
+    def _unwind_wrist_if_flipped(self):
+        """If the arm's CURRENT wrist joints are on the far branch of the
+        spherical-wrist flip (see WRIST_FLIP_THRESHOLD above), re-solve IK for
+        this exact same current pose from a centered seed and, if a
+        meaningfully different solution comes back, correct to it.
+
+        Zero change to the end-effector pose — this only re-chooses which
+        joint-space solution represents the pose the arm is already AT and
+        already verified, so it's safe to call before every attempt at the
+        descent leg regardless of whether anything is actually wrong (a
+        no-op scan when already centered). Never blocks a grasp: any failure
+        here just leaves the arm exactly where it was.
+        """
+        try:
+            current = self.move_group.get_current_joint_values()
+            forearm_roll = current[ARM_JOINTS.index("forearm_roll")]
+        except Exception:
+            return
+        if abs(forearm_roll) < WRIST_FLIP_THRESHOLD:
+            return
+        try:
+            pose = self.move_group.get_current_pose().pose
+            req = GetPositionIKRequest()
+            req.ik_request.group_name = "interbotix_arm"
+            req.ik_request.ik_link_name = f"{self.ns}/ee_gripper_link"
+            ps = PoseStamped()
+            ps.header.frame_id = f"{self.ns}/base_link"
+            ps.pose = pose
+            req.ik_request.pose_stamped = ps
+            req.ik_request.avoid_collisions = False
+            req.ik_request.timeout = rospy.Duration(0.3)
+            req.ik_request.robot_state.joint_state = JointState(
+                name=ARM_JOINTS, position=list(GRASP_READY_POSE))
+            r = self._ik_srv(req)
+        except rospy.ServiceException as e:
+            rospy.logwarn("[arm] Wrist-branch check failed: %s", e)
+            return
+        if r.error_code.val != 1:
+            return
+        sol = dict(zip(r.solution.joint_state.name, r.solution.joint_state.position))
+        alt_roll = sol.get("forearm_roll")
+        if alt_roll is None or abs(alt_roll) >= WRIST_FLIP_THRESHOLD:
+            return   # no better branch found — leave the arm where it is
+        target = [sol[j] for j in ARM_JOINTS]
+        rospy.loginfo("[arm] Wrist on the far branch (forearm_roll=%+.2f, near its own "
+                      "limit) — unwinding to the equivalent centered solution "
+                      "(forearm_roll=%+.2f), same end-effector pose", forearm_roll, alt_roll)
+        self.arm.send_joints(target, move_time=1.0)
+        self.arm.hold(0.5)
+
     def _wp_for(self, ori):
         """Waypoint factory bound to a fixed EE orientation."""
         def _wp(px, py, pz):
@@ -595,6 +667,11 @@ class GraspExecutor:
         # long, and grasp_z is floor-clamped well above the table.
         cart_plan, fraction = None, 0.0
         for attempt in (1, 2):
+            # Before every attempt (including after a re-seat below): the arm is
+            # confidently at a known, just-verified pose here, so this is the
+            # cheapest safe place to catch a wrist that's drifted onto the far
+            # branch before it can carry that into the leg that's about to run.
+            self._unwind_wrist_if_flipped()
             legs = [_wp(x, y, grasp_z)]
             cart_plan, fraction = self.move_group.compute_cartesian_path(
                 legs, 0.005, False)
