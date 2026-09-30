@@ -15,19 +15,20 @@
         <gripper_link>${LINK_PREFIX}/left_finger_link</gripper_link>
         <gripper_link>${LINK_PREFIX}/right_finger_link</gripper_link>
       </arm>
-      <!-- release_tolerance = how far a finger contact point must move from the
-           object before GazeboGraspFix drops the weld (GazeboGraspFix.cpp:
-           `diff > releaseTolerance`).  The ONLY thing that moves that contact
-           point on release is the finger opening, so usable "diff" = finger open
-           travel.  This bottle body is ~66 mm and the finger joint hard limit is
-           0.037 (37 mm), so the finger rests at ~33 mm holding it and can open
-           only ~4 mm.  At the old 0.008 (8 mm) the ~4 mm open NEVER reached the
-           threshold, so the weld never released and the object rode away on the
-           arm ("gripper won't drop it").  Lowered to 0.003 (< the ~4 mm travel)
-           so the deliberate open reliably detaches.  Safe for the hold: the grip
-           was rock-solid at 8 mm (never released at all), so finger↔object jitter
-           during the slow carry is far under 3 mm; and release_tolerance only
-           governs DETACH, never attach strength. -->
+      <!-- release_tolerance = how far a finger must have slid AWAY from the
+           object, along its own axis, before GazeboGraspFix drops the weld.
+           Opening the jaws around the bottle's neck gives ~11 mm; holding gives
+           ~0 (inward creep counts negative, the object sagging in the attach
+           joint is across the axis), so 3 mm separates the two cleanly.
+           NOTE this relies on a local patch to ~/th_ws/src/gazebo-pkgs
+           (GazeboGraspFix.cpp, detach check; `git -C ~/th_ws/src/gazebo-pkgs
+           diff`). Upstream compares only the LENGTHS of the contact-to-object-
+           origin vectors; the bottle's origin is at its base, ~210 mm below a
+           neck grip, and the opening moves the pads almost perpendicular to
+           that, so the length changed ~1 mm and the weld never let go —
+           measured live: bottle placed upright, jaws fully open, and the
+           retreat still carried it off the table. A plain displacement metric
+           released mid-carry instead (finger creep + sag in the soft joint). -->
       <forces_angle_tolerance>120</forces_angle_tolerance>
       <update_rate>20</update_rate>
       <grip_count_threshold>1</grip_count_threshold>

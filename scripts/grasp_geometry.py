@@ -19,11 +19,26 @@ GRIP_Z_CEILING  = 0.085
 GRIP_Z_UNKNOWN  = 0.08
 
 # Per-finger joint positions (m); right_finger mirrors left_finger. The URDF
-# limits left_finger to [0.015, 0.037], so the jaws open 30-74 mm. FINGER_CLOSE
-# is deliberately below that minimum: the controller clamps it, so "close"
-# always means fully closed.
+# limits left_finger to [0.015, 0.037]. FINGER_CLOSE is deliberately below that
+# minimum: the controller clamps it, so "close" always means fully closed.
 FINGER_OPEN  = 0.037
 FINGER_CLOSE = 0.010
+# The pads' inner faces sit this far INSIDE each finger's joint position: the
+# finger mesh's contact plate is at y=-9 mm in its own link frame. So the real
+# gap between the pads is 2*(joint - PAD_INSET): 12-56 mm, NOT 30-74 mm.
+# Measured in Gazebo by closing on floating blocks: 40 mm stopped the fingers at
+# 28.9 mm, 30 mm at 24.0 mm (this model: 29.0/24.0; joint-equals-pad: 20/15).
+PAD_INSET = 0.009
+
+
+def finger_pos_for_width(width):
+    """Finger joint position at which the pads just touch an object this wide."""
+    return width / 2.0 + PAD_INSET
+
+
+def jaw_width(finger_pos):
+    """Real pad-to-pad gap for a finger joint position."""
+    return 2.0 * (finger_pos - PAD_INSET)
 # Assumed object size [H, W, L] when nothing was measured — only ever used to
 # size collision boxes, never to choose a grip.
 UNKNOWN_OBJECT_DIMS = (0.15, 0.06, 0.06)
@@ -363,10 +378,9 @@ def obstacle_boxes(detections, target_name, table_z, pad=0.02):
 def gripper_span_for(dims_hwl, grasp_axis, open_clearance=0.022, grip_squeeze=0.018):
     """Per-finger OPEN and CLOSE positions adapted to the object size.
 
-    The gripper is antagonistic: the left_finger joint position (metres) is the
-    finger's displacement from centre and the right_finger mirrors it, so the
-    object's half-width maps directly to the finger position needed to touch
-    it. Sizing both motions off the measured object makes the same code grasp a
+    The gripper is antagonistic: right_finger mirrors left_finger, and the pads
+    touch the object at finger_pos_for_width(width) (half-width + PAD_INSET).
+    Sizing both motions off the measured object makes the same code grasp a
     thin bottle or a wide box — only the numbers change.
 
     dims_hwl      : [H, W, L] camera-measured object dimensions in metres.
@@ -382,9 +396,9 @@ def gripper_span_for(dims_hwl, grasp_axis, open_clearance=0.022, grip_squeeze=0.
     if dims_hwl is None:
         return FINGER_OPEN, FINGER_CLOSE
     narrow_m = float(dims_hwl[1] if grasp_axis == "along_x" else dims_hwl[2])
-    half = narrow_m / 2.0                          # finger displacement at contact
-    open_pos = float(np.clip(half + open_clearance, FINGER_CLOSE + 0.008, FINGER_OPEN))
-    close_pos = float(np.clip(half - grip_squeeze, FINGER_CLOSE, FINGER_OPEN - 0.005))
+    contact = finger_pos_for_width(narrow_m)
+    open_pos = float(np.clip(contact + open_clearance, FINGER_CLOSE + 0.008, FINGER_OPEN))
+    close_pos = float(np.clip(contact - grip_squeeze, FINGER_CLOSE, FINGER_OPEN - 0.005))
     return open_pos, close_pos
 
 

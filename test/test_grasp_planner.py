@@ -69,17 +69,17 @@ def grasp_xy_error(plan, centre):
     return math.hypot(plan["grasp_point"][0] - centre[0], plan["grasp_point"][1] - centre[1])
 
 
-def test_bottle_body():
-    """68 mm cylinder, like the bottle's body: width from the silhouette (a
-    single view measures the chord between the tangent points, a hair under
-    the diameter), grip at the anchor height, jaws on the centre."""
+def test_uniform_cylinder():
+    """48 mm cylinder: width from the silhouette (a single view measures the
+    chord between the tangent points, a hair under the diameter), grip at the
+    anchor height, jaws on the centre."""
     c = (0.45, 0.02)
-    shape, corners = cylinder(*c, 0.034, 0.25)
-    plan, diag = plan_scene([shape], corners, c, [0.25, 0.068, 0.068])
+    shape, corners = cylinder(*c, 0.024, 0.25)
+    plan, diag = plan_scene([shape], corners, c, [0.25, 0.048, 0.048])
     assert plan is not None, diag
-    assert_width(diag["width"], 0.068)
+    assert_width(diag["width"], 0.048)
     assert grasp_xy_error(plan, c) < 0.003, (plan["grasp_point"], c)
-    anchor = gg.grasp_height_above_table([0.25, 0.068, 0.068])
+    anchor = gg.grasp_height_above_table([0.25, 0.048, 0.048])
     assert abs(diag["band_z"] - anchor) <= 0.005, (diag["band_z"], anchor)
     assert abs(plan["grasp_point"][2] - (TABLE_Z + diag["band_z"])) < 1e-9
     assert diag["quality"] > 0.97, diag["quality"]
@@ -87,8 +87,36 @@ def test_bottle_body():
     # a uniform body: where the pads touch is the band's own width, to the noise
     # of the widest band within the pad
     assert 0.0 <= diag["contact_width"] - diag["width"] < 0.002
-    assert abs(plan["gripper_close"] - (diag["contact_width"] / 2 - gp.SQUEEZE)) < 1e-9
+    expected = gg.finger_pos_for_width(diag["contact_width"]) - gp.SQUEEZE
+    assert abs(plan["gripper_close"] - expected) < 1e-9
     assert plan["gripper_open"] == gg.FINGER_OPEN
+
+
+def test_close_target_accounts_for_the_pad_inset():
+    """The pads sit gg.PAD_INSET inside the finger joint position (measured in
+    Gazebo: a 40 mm block stops the fingers at 28.9 mm, not 20). The close
+    target must put the pads SQUEEZE into the object, not SQUEEZE + 9 mm."""
+    assert abs(gg.finger_pos_for_width(0.040) - 0.029) < 1e-9
+    assert abs(gg.jaw_width(gg.FINGER_OPEN) - 0.056) < 1e-9
+    c = (0.45, 0.0)
+    shape, corners = cylinder(*c, 0.020, 0.25)
+    plan, diag = plan_scene([shape], corners, c, [0.25, 0.040, 0.040])
+    assert plan is not None, diag
+    pad_depth = gg.jaw_width(gg.finger_pos_for_width(diag["contact_width"])) / 2 \
+        - gg.jaw_width(plan["gripper_close"]) / 2
+    assert abs(pad_depth - gp.SQUEEZE) < 1e-9, pad_depth
+
+
+def test_catalogued_can_and_tea_box_are_too_wide_for_the_real_jaws():
+    """The jaws open 56 mm pad to pad. The 55 mm coke can would leave 0.5 mm a
+    side and the 60 mm tea box does not fit at all — in any orientation."""
+    c = (0.45, 0.0)
+    can, can_corners = cylinder(*c, 0.0275, 0.096)
+    plan, diag = plan_scene([can], can_corners, c, [0.096, 0.055, 0.055])
+    assert plan is None and "too wide" in diag["reason"], diag
+    for yaw_dev in (0.0, math.radians(30)):
+        c, plan, diag = _turned_box(0.06, yaw_dev)
+        assert plan is None and "too wide" in diag["reason"], diag
 
 
 def test_box_face_on():
@@ -96,11 +124,11 @@ def test_box_face_on():
     Completing the slice by reflection puts them back, and the depth prior (L)
     puts the grasp point at the box's centre instead of on its front face."""
     c = (0.45, 0.0)
-    shape, corners = box(*c, 0.06, 0.06, 0.09)
-    plan, diag = plan_scene([shape], corners, c, [0.09, 0.06, 0.06])
+    shape, corners = box(*c, 0.045, 0.045, 0.09)
+    plan, diag = plan_scene([shape], corners, c, [0.09, 0.045, 0.045])
     assert plan is not None, diag
     assert diag["visible_depth"] < 0.005, diag["visible_depth"]   # it really is one face
-    assert_width(diag["width"], 0.06)
+    assert_width(diag["width"], 0.045)
     assert grasp_xy_error(plan, c) < 0.003, (plan["grasp_point"], c)
     assert diag["quality"] > 0.99, diag["quality"]
     assert diag["axis_dev"] == 0.0
@@ -131,30 +159,30 @@ def _check_face_grasp(c, plan, diag, side):
 
 
 def test_turned_box_would_turn_in_the_jaws():
-    """A 40 mm box turned 30°: with the closing axis fixed across the approach
+    """A 34 mm box turned 30°: with the closing axis fixed across the approach
     the jaws land on two corners and would turn the box 30° before a face
     seats (more than MAX_SEAT_TURN), so the planner refuses. Allowed to turn
     the axis, it closes across the faces. The centre comes from the
     silhouette corners, not the depth prior."""
-    c, plan, diag = _turned_box(0.04, 0.0)
+    c, plan, diag = _turned_box(0.034, 0.0)
     assert plan is None, diag
     assert re.search(r"would turn (29|30|31)°", diag["reason"]), diag["reason"]
-    c, plan, diag = _turned_box(0.04, math.radians(30))
-    _check_face_grasp(c, plan, diag, 0.04)
+    c, plan, diag = _turned_box(0.034, math.radians(30))
+    _check_face_grasp(c, plan, diag, 0.034)
 
 
-def test_turned_tea_box_fits_only_across_its_faces():
-    """The tea box turned 30° is 0.06 (cos 30° + sin 30°) = 82 mm across the
-    approach — wider than the jaws open. Across its faces it is 60 mm."""
-    c, plan, diag = _turned_box(0.06, 0.0)
+def test_turned_box_fits_only_across_its_faces():
+    """A 44 mm box turned 30° is 0.044 (cos 30° + sin 30°) = 60 mm across the
+    approach — wider than the jaws open. Across its faces it is 44 mm."""
+    c, plan, diag = _turned_box(0.044, 0.0)
     assert plan is None, diag
     assert "too wide" in diag["reason"], diag["reason"]
-    c, plan, diag = _turned_box(0.06, math.radians(30))
-    _check_face_grasp(c, plan, diag, 0.06)
+    c, plan, diag = _turned_box(0.044, math.radians(30))
+    _check_face_grasp(c, plan, diag, 0.044)
 
 
 def test_too_wide_for_the_jaws():
-    """80 mm: the jaws open to 74 mm. The old fit gate (GRIPPER_W_M + 0.03 =
+    """80 mm: the jaws open to 56 mm. The old fit gate (GRIPPER_W_M + 0.03 =
     110 mm) called this graspable."""
     c = (0.45, 0.0)
     shape, corners = cylinder(*c, 0.04, 0.25)
@@ -164,20 +192,21 @@ def test_too_wide_for_the_jaws():
 
 
 def test_close_squeezes_a_little_past_the_contact_never_fully():
-    """Body 60 mm up to 95 mm, then a 24 mm neck: the grip band sits just
-    below the narrowing. The jaws are commanded SQUEEZE past where the pads
-    touch — not fully closed (10 mm past a 60 mm body's surface ejected the
-    object in the sim)."""
+    """Body 48 mm up to 95 mm, then a 10 mm spike (under the jaws' 12 mm
+    minimum): the grip band sits just below the narrowing. The jaws are
+    commanded SQUEEZE past where the pads touch — not fully closed (10 mm past a
+    60 mm body's surface ejected the object in the sim)."""
     c = (0.45, 0.0)
-    body = sd.Cylinder(*c, 0.03, TABLE_Z, TABLE_Z + 0.095)
-    neck = sd.Cylinder(*c, 0.012, TABLE_Z + 0.095, TABLE_Z + 0.25)
-    corners = sd.corners(*c, 0.03, 0.03, TABLE_Z, TABLE_Z + 0.25)
-    plan, diag = plan_scene([body, neck], corners, c, [0.25, 0.06, 0.06])
+    body = sd.Cylinder(*c, 0.024, TABLE_Z, TABLE_Z + 0.095)
+    neck = sd.Cylinder(*c, 0.005, TABLE_Z + 0.095, TABLE_Z + 0.25)
+    corners = sd.corners(*c, 0.024, 0.024, TABLE_Z, TABLE_Z + 0.25)
+    plan, diag = plan_scene([body, neck], corners, c, [0.25, 0.048, 0.048])
     assert plan is not None, diag
     assert diag["band_z"] < 0.095
-    assert_width(diag["width"], 0.06)
+    assert_width(diag["width"], 0.048)
     assert diag["tapered"] and not plan["full_close"]
-    assert abs(plan["gripper_close"] - (diag["contact_width"] / 2 - gp.SQUEEZE)) < 1e-9
+    expected = gg.finger_pos_for_width(diag["contact_width"]) - gp.SQUEEZE
+    assert abs(plan["gripper_close"] - expected) < 1e-9
     assert plan["gripper_close"] > gg.FINGER_CLOSE + 0.005
 
 
@@ -199,8 +228,7 @@ def test_close_target_is_measured_from_where_a_taper_is_touched():
     assert plan is not None, diag
     assert diag["contact_width"] > diag["width"] + 0.003, (diag["contact_width"], diag["width"])
     assert plan["gripper_close"] > gg.FINGER_CLOSE, plan["gripper_close"]
-    assert plan["gripper_close"] >= diag["contact_width"] / 2 - gp.SQUEEZE - 1e-9
-    interference = diag["contact_width"] / 2 - plan["gripper_close"]
+    interference = gg.finger_pos_for_width(diag["contact_width"]) - plan["gripper_close"]
     assert interference <= gp.SQUEEZE + 1e-9, interference
 
 
@@ -225,21 +253,19 @@ def test_neck_above_a_too_wide_body_is_reachable():
 
 
 def test_fitting_body_loses_to_a_roomier_neck():
-    """The real bottle_beer, from the widths measured live in Gazebo: 66 mm from
-    the table to ~165 mm (fits the 74 mm jaws, but with only 4 mm a side), then a
-    shoulder and a neck narrowing to ~36 mm. The body FITS, so the older
-    "too wide" test never covered this: the planner has to prefer the neck for
-    its room, not only take it when the body is measured over the limit. With the
-    formula's height guess weighted 0.5 the body scored 1.60 against the neck's
-    1.30 and the arm gripped 82 mm up, every run the measurement came in under
-    70 mm."""
+    """A bottle scaled to fit the real 56 mm jaws: a 50 mm body up to 165 mm
+    (fits, but with only 3 mm a side), then a shoulder and a neck narrowing to
+    27 mm. The body FITS, so the "too wide" test never covers this: the planner
+    has to prefer the neck for its room, not only take it when the body is
+    measured over the limit. With the formula's height guess weighted 0.5 the
+    body outscored the neck and the arm gripped the body every run."""
     c = (0.45, 0.0)
-    steps = [(0.0333, 0.000, 0.165), (0.0310, 0.165, 0.170), (0.0290, 0.170, 0.175),
-             (0.0260, 0.175, 0.180), (0.0230, 0.180, 0.186), (0.0200, 0.186, 0.196),
-             (0.0180, 0.196, 0.233)]
+    steps = [(0.0250, 0.000, 0.165), (0.0233, 0.165, 0.170), (0.0218, 0.170, 0.175),
+             (0.0195, 0.175, 0.180), (0.0173, 0.180, 0.186), (0.0150, 0.186, 0.196),
+             (0.0135, 0.196, 0.233)]
     shapes = [sd.Cylinder(*c, r, TABLE_Z + lo, TABLE_Z + hi) for r, lo, hi in steps]
-    corners = sd.corners(*c, 0.0333, 0.0333, TABLE_Z, TABLE_Z + 0.233)
-    plan, diag = plan_scene(shapes, corners, c, [0.233, 0.066, 0.066])
+    corners = sd.corners(*c, 0.025, 0.025, TABLE_Z, TABLE_Z + 0.233)
+    plan, diag = plan_scene(shapes, corners, c, [0.233, 0.050, 0.050])
     assert plan is not None, diag
     assert diag["band_z"] > 0.165, ("gripped the body", diag["band_z"], diag["width"])
     clearance = (gp.JAW_MAX - diag["width"]) / 2.0
@@ -264,11 +290,11 @@ def test_pad_height_is_checked_not_just_one_band():
 
 def test_uniform_can_is_not_tapered():
     c = (0.44, -0.03)
-    shape, corners = cylinder(*c, 0.0275, 0.096)
-    plan, diag = plan_scene([shape], corners, c, [0.096, 0.055, 0.055])
+    shape, corners = cylinder(*c, 0.0225, 0.096)
+    plan, diag = plan_scene([shape], corners, c, [0.096, 0.045, 0.045])
     assert plan is not None, diag
     assert not plan["full_close"]
-    assert_width(diag["width"], 0.055)
+    assert_width(diag["width"], 0.045)
 
 
 def test_too_short_for_a_side_grasp():
@@ -281,32 +307,32 @@ def test_too_short_for_a_side_grasp():
 
 def test_neighbour_in_the_detection_box_is_cut():
     """A can 10 cm to the side shares the detection box (bbox of both); the
-    radius cut (68 mm for the bottle) keeps it out of the bottle's slices."""
+    radius cut keeps it out of the target's slices."""
     c = (0.45, 0.02)
-    bottle, b_corners = cylinder(*c, 0.034, 0.25)
+    bottle, b_corners = cylinder(*c, 0.024, 0.25)
     can, c_corners = cylinder(c[0] + 0.01, c[1] + 0.10, 0.0275, 0.096)
-    alone, _ = plan_scene([bottle], b_corners, c, [0.25, 0.068, 0.068])
-    both, diag = plan_scene([bottle, can], b_corners + c_corners, c, [0.25, 0.068, 0.068])
+    alone, _ = plan_scene([bottle], b_corners, c, [0.25, 0.048, 0.048])
+    both, diag = plan_scene([bottle, can], b_corners + c_corners, c, [0.25, 0.048, 0.048])
     assert both is not None, diag
-    assert_width(diag["width"], 0.068)
+    assert_width(diag["width"], 0.048)
     assert np.allclose(both["grasp_point"], alone["grasp_point"], atol=0.001)
 
 
 def test_depth_noise_does_not_change_the_decision():
     """2 mm of depth noise (a real depth camera at half a metre; Gazebo's has
-    none) on the bottle and on the turned 40 mm box: the bottle is still
+    none) on a 48 mm cylinder and on the turned 34 mm box: the cylinder is still
     planned with its width and centre, the box still refused. Face quality
     taken from hull edges failed this: noise puts millimetre edges on the hull
     facing every direction."""
     c = (0.45, 0.02)
-    bottle, b_corners = cylinder(*c, 0.034, 0.25)
-    box40, x_corners = box(0.45, 0.0, 0.04, 0.04, 0.09, yaw=math.radians(30))
+    bottle, b_corners = cylinder(*c, 0.024, 0.25)
+    box34, x_corners = box(0.45, 0.0, 0.034, 0.034, 0.09, yaw=math.radians(30))
     for seed in range(3):
         rng = np.random.default_rng(seed)
-        plan, diag = plan_scene([bottle], b_corners, c, [0.25, 0.068, 0.068], noise=(rng, 0.002))
+        plan, diag = plan_scene([bottle], b_corners, c, [0.25, 0.048, 0.048], noise=(rng, 0.002))
         assert plan is not None, diag
-        assert abs(diag["width"] - 0.068) < 0.002 and grasp_xy_error(plan, c) < 0.005
-        plan, diag = plan_scene([box40], x_corners, (0.45, 0.0), [0.09, 0.04, 0.04],
+        assert abs(diag["width"] - 0.048) < 0.002 and grasp_xy_error(plan, c) < 0.005
+        plan, diag = plan_scene([box34], x_corners, (0.45, 0.0), [0.09, 0.034, 0.034],
                                 noise=(rng, 0.002))
         assert plan is None and "would turn" in diag["reason"], diag
 
@@ -404,8 +430,9 @@ def test_neck_grip_clears_the_shoulder_with_the_measured_aim_error():
     the true table). At 178 mm the planner used to grip with a pad that reached
     down to the 46-53 mm shoulder: room on paper (~10 mm/side) but none once the
     7-10 mm aim error the contact check measures is taken off it — the lower finger
-    corner grazed the bottle. The chosen band must leave the aim error (plus slack)
-    on each side of the WHOLE pad."""
+    corner grazed the bottle. The chosen band must leave the aim error on each side
+    of the WHOLE pad: with the real 56 mm jaws this bottle offers ~12 mm a side at
+    best, so 10 mm (the worst aim error ever measured, 9.4 mm) is the bar."""
     c = (0.46, 0.0)
     profile = [(0.000, 0.0665), (0.130, 0.0665), (0.138, 0.0651), (0.143, 0.0630),
                (0.148, 0.0587), (0.152, 0.0531), (0.158, 0.0459), (0.162, 0.0404),
@@ -423,7 +450,7 @@ def test_neck_grip_clears_the_shoulder_with_the_measured_aim_error():
     widest_under_pad = max(w for (z, w) in profile if z >= lower_edge - 0.005) if lower_edge > 0 else 0.0665
     room = (gp.JAW_MAX - widest_under_pad) / 2.0
     assert diag["band_z"] >= 0.185, ("still gripping low, on the shoulder", diag["band_z"])
-    assert room >= 0.015, ("less room than the aim error needs", room, diag["band_z"])
+    assert room >= 0.010, ("less room than the aim error needs", room, diag["band_z"])
 
 
 if __name__ == "__main__":

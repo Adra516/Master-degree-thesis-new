@@ -25,6 +25,7 @@ import tf2_ros
 from std_msgs.msg import String
 
 import rotations
+from grasp_geometry import PAD_INSET
 
 
 class GraspDiagnostics:
@@ -173,8 +174,9 @@ class GraspDiagnostics:
                 return None
             centre = (lf + rf) / 2.0
             axis   = rf - lf
-            gap    = float(np.linalg.norm(axis))
-            u      = axis / (gap + 1e-9)              # finger-closing axis unit vector
+            link_gap = float(np.linalg.norm(axis))
+            u      = axis / (link_gap + 1e-9)         # finger-closing axis unit vector
+            gap    = link_gap - 2 * PAD_INSET         # pad to pad, not link origin to origin
             dcx, dcy, dcz = centre[0]-cx, centre[1]-cy, centre[2]-cz
             rospy.loginfo(
                 "[diag] CONTACT gripper-centre=(%.3f,%.3f,%.3f)  jaw_gap=%.1fmm",

@@ -51,8 +51,8 @@ import footprint
 import rotations
 import grasp_geometry as gg
 
-JAW_MIN = 2 * 0.015                 # URDF left_finger lower limit, both fingers
-JAW_MAX = 2 * gg.FINGER_OPEN        # 0.074
+JAW_MIN = gg.jaw_width(0.015)       # URDF left_finger lower limit: 12 mm pad to pad
+JAW_MAX = gg.jaw_width(gg.FINGER_OPEN)   # 56 mm pad to pad (see gg.PAD_INSET)
 SIDE_CLEARANCE = 0.002              # the open jaws must pass the object by this, per side
 MAX_SEAT_TURN = math.radians(25.0)  # how far the object may turn in the closing jaws
 ROUND_TOL = 0.002                   # w(theta) this close to its minimum: nothing to turn toward
@@ -90,6 +90,12 @@ CLEARANCE_FULL = 0.018
 # commanded target, tipped the bottle >10 deg and dragged it 38 mm while
 # closing. 4 mm is the safe end of that measured range; it still holds (measured
 # clean: 0 deg / 0 mm disturbance at 198 mm) with more of the margin behind it.
+# CAVEAT: every squeeze above was measured before gg.PAD_INSET existed, when
+# close targets ignored it, so the pads were really commanded SQUEEZE + 9 mm
+# into the object (13 mm, not 4). That is the jaws "stalling" at ~57 mm and
+# snapping shut on the lift: they were resting on the neck at 39 mm real width,
+# preloaded 13 mm deep. With the inset applied, 4 mm now means 4 mm (~0.4 N at
+# the gripper's p=100).
 SQUEEZE = 0.004
 TAPER_LOOKUP = 0.02                 # diagnostic only: compare the width this far above the grip...
 TAPER_DROP = 0.005                  # ...narrower by more than this = tapered
@@ -276,9 +282,10 @@ def plan_from_points(points, table_z, bearing, dims_hwl, depth_hint=None, max_de
     tapered = above is not None and above.width < width - TAPER_DROP
     yaw = bearing + cand["dev"]
     quat = [float(v) for v in rotations.quaternion_from_euler(0.0, 0.0, yaw)]
-    open_pos = float(np.clip(width / 2.0 + 0.022, gg.FINGER_CLOSE + 0.008, gg.FINGER_OPEN))
-    close_pos = float(np.clip(contact_width / 2.0 - SQUEEZE, gg.FINGER_CLOSE,
-                              gg.FINGER_OPEN - 0.005))
+    open_pos = float(np.clip(gg.finger_pos_for_width(width) + 0.022,
+                             gg.FINGER_CLOSE + 0.008, gg.FINGER_OPEN))
+    close_pos = float(np.clip(gg.finger_pos_for_width(contact_width) - SQUEEZE,
+                              gg.FINGER_CLOSE, gg.FINGER_OPEN - 0.005))
     size = dims_hwl if dims_hwl is not None else gg.UNKNOWN_OBJECT_DIMS
 
     plan = {"valid": True,

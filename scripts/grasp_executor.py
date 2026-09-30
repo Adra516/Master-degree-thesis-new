@@ -306,7 +306,7 @@ class GraspExecutor:
                               "(a %.0fmm grip). Fine for a wide object, but if the planned "
                               "grip width was narrower than that the jaws are on a wider "
                               "part than planned — check the grasp height",
-                              (FINGER_OPEN - gw_m) * 1000, gw_m * 2000)
+                              (FINGER_OPEN - gw_m) * 1000, gg.jaw_width(gw_m) * 1000)
         else:
             data.setdefault("reason", "MoveIt planning or execution failed")
             rospy.logwarn("[arm] Grasp failed (gripper=%.1fmm  plan_ok=%s): %s",
