@@ -601,6 +601,23 @@ class TaskOrchestrator:
         self.set_arm_pose(pose_name="camera_clear")
         rospy.sleep(1.2)   # let perception deliver frames of the unobstructed scene
         st = self.get_target(target_name=target_name).state
+        # A single read here can catch perception between frames (a live pick
+        # measured this: whatever caused it, detections briefly read zero right
+        # at this instant, lock_age was already past GRASP_MAX_LOCK_AGE, and the
+        # plan fell all the way through to the map fallback -- baseline height
+        # AND an unprimed odometry cache at once, so nothing downstream could
+        # catch it either: the arm closed on empty air, lifted, "placed" and
+        # released nothing, and still reported success). Retry briefly for a
+        # FRESH detection before accepting a stale one -- cheap when perception
+        # is already fine (breaks out immediately), and turns a fixable timing
+        # gap into a correct grasp instead of a silent no-op.
+        for _ in range(4):
+            if st.in_frame or (st.locked and st.lock_age < GRASP_MAX_LOCK_AGE):
+                break
+            rospy.logwarn("[task] No fresh detection of '%s' yet (lock_age=%.1fs) — "
+                          "waiting for perception to catch up", target_name, st.lock_age)
+            rospy.sleep(1.2)
+            st = self.get_target(target_name=target_name).state
         p = measured_position(st, GRASP_MAX_LOCK_AGE)
         if p is not None:
             pos = [round(p[0], 3), round(p[1], 3)]
