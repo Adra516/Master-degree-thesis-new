@@ -26,6 +26,7 @@ from geometry_msgs.msg import Pose
 
 import grasp_geometry as gg
 from arm_actuators import CAMERA_CLEAR_POSE, GRASP_READY_POSE
+from gain_scheduler import GainScheduler
 from grasp_geometry import FINGER_CLOSE, FINGER_OPEN
 
 # Gate tolerances. Read LIVE (live_param), so `rosparam set ~<name> <v>` takes
@@ -68,6 +69,11 @@ class GraspExecutor:
         # pregrasp() leaves the arm holding at the standoff and stashes what
         # grasp() needs here. None = no verified pre-grasp: grasp() must refuse.
         self._pending_grasp = None
+        # Gain scheduling while holding a grasped object — see gain_scheduler.py's
+        # module docstring. LOAD_GAIN_DELTA is empty for every joint right now
+        # (step 1: prove the plumbing, change nothing), so apply_load()/release()
+        # below are no-ops until a real delta is measured and filled in.
+        self.gains = GainScheduler(robot_name)
 
         rospy.loginfo("[arm] Grasp gates: pre-grasp <= %.1fmm / %.1f°, "
                       "contact miss <= %.1fmm (all live-tunable via rosparam)",
@@ -88,6 +94,15 @@ class GraspExecutor:
         On failure the scene is torn down and the arm retracts, so the caller
         can re-position the base and try again. Returns (ok, info).
         """
+        # Safety net: if the previous pick's grasp() applied a load (gains.apply_load())
+        # but the caller then skipped place() — e.g. world_model_node's "gripper closed
+        # but nearly empty" branch, which retracts without ever calling place() — the
+        # loaded gains would otherwise stay applied indefinitely. Every pick starts
+        # with a pregrasp(), so releasing here guarantees convergence regardless of what
+        # the previous attempt's caller decided. Harmless no-op while the object is
+        # genuinely still held (release() just republishes the same tuned baseline);
+        # currently a no-op regardless, since LOAD_GAIN_DELTA is empty (see gain_scheduler.py).
+        self.gains.release()
         self.table_surface_z = table_z
         x, y = plan["grasp_point"][0], plan["grasp_point"][1]
         dist = math.hypot(x, y)
@@ -218,6 +233,7 @@ class GraspExecutor:
         #    grasp to attach at all).
         self.arm.hold(0.8)
         self.gripper.send(FINGER_OPEN, move_time=1.0)
+        self.gains.release()   # back to the tuned baseline; no-op until a delta exists
         # Also drop the MoveIt attachment so future plans are clean.
         self.scene.detach()
 
@@ -670,6 +686,7 @@ class GraspExecutor:
         # Re-hold at the new pose: the grasped object shifts the load, so
         # re-command the measured joints to absorb it before lifting.
         self.arm.hold(0.6)
+        self.gains.apply_load()   # no-op until a real delta is measured (see gain_scheduler.py)
 
         # Attach the object in the planning scene so the retreat avoids the table.
         # (W, L, H), the axis order this box has always been attached with.

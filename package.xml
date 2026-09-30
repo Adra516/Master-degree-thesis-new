@@ -83,6 +83,11 @@
   <exec_depend>tf</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>message_runtime</exec_depend>
+  <!-- gain_scheduler.py: reads/writes arm_controller's and gripper_controller's
+       per-joint PID gains live via each JointTrajectoryController joint's own
+       dynamic_reconfigure server (a stock control_toolbox::Pid feature, not
+       anything this package sets up itself). -->
+  <exec_depend>dynamic_reconfigure</exec_depend>
 
 
   <!-- The export tag contains other, unspecified, tags -->
