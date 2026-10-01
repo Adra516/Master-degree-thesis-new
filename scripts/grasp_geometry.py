@@ -152,14 +152,24 @@ def is_tapered(dims_hwl, grasp_axis):
 #
 # Clearance now means horizontal room, not vertical: the standoff must sit
 # outside the target's padded collision box along the approach axis.  A typical
-# target's box half-extent is ~0.04-0.055 m (a 0.06-0.09 m footprint plus pad),
-# so 0.08 m clears it with margin.  MoveIt enforces the rest for free — the
-# approach is planned collision-aware with the target still an obstacle, so a
-# standoff that IS inside the box simply fails to plan, and the caller's
-# adaptive retry escalates the offset rather than a hand-tuned formula having
-# to predict it.
+# target's box half-extent is ~0.04-0.055 m (a 0.06-0.09 m footprint plus pad).
+# MoveIt enforces the rest for free — the approach is planned collision-aware
+# with the target still an obstacle, so a standoff that IS inside the box
+# simply fails to plan; the caller's retry on failure shrinks the offset
+# (moves closer), which only helps when the standoff was kinematically out of
+# reach, not when a scene obstacle is blocking an otherwise-reachable one.
+#
+# MEASURED live 2026-10-01: at the old 0.08 m, ~30% of pre-grasp approaches hit
+# this — every single one confirmed (same path re-planned with collisions OFF
+# -> 100%) to be the target's OWN box clipped mid-swing, never a kinematics
+# problem. compute_cartesian_path checks collision along the WHOLE interpolated
+# path from wherever the arm currently is, not just the destination, so even a
+# ~21 mm point-clearance margin at 0.08 m left room for the wrist/forearm to
+# graze the box partway through, depending on the exact start pose. Widened to
+# 0.10 m (~41 mm margin) — comfortably inside the already-measured reachability
+# budget below (0.321 rad of joint-limit margin at 0.10 m vs 0.384 at 0.08 m).
 TARGET_BOX_PAD = 0.01   # MUST match the motion node's _add_target_obstacle pad
-PREGRASP_STANDOFF_OFFSET = 0.08   # metres back along the approach axis
+PREGRASP_STANDOFF_OFFSET = 0.10   # metres back along the approach axis
 # Air between the fingertips and the padded box face at the minimum offset.
 # ee_gripper_link is FK-MEASURED to be the furthest-forward link of the whole
 # gripper (nothing sticks out past it), so the offset is a fingertip clearance

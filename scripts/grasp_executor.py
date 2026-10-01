@@ -64,6 +64,8 @@ REACH_MIN = 0.33
 # joint reading" hold() warnings and the grip destabilising right after closing
 # have both been traced to.
 WRIST_FLIP_THRESHOLD = 1.5
+# Default place height above the grasp height (m) — see place().
+PLACE_CLEARANCE = 0.005
 
 
 def live_param(name, default):
@@ -211,15 +213,19 @@ class GraspExecutor:
         open (that left the object welded to the arm forever) — always open the
         gripper, even if the arm only got part way down.
 
-        place_z None = 3 mm below the height it was grasped at: the object's
-        base rests on the table while still held, so any tilt is squared up
-        before release.
+        place_z None = PLACE_CLEARANCE above the height it was grasped at: the
+        object is released just short of the table and drops the last few mm.
+        Descending BELOW it (the old -3 mm, to square the object up on the
+        table while still held) wedged the bottle between the table and the
+        still-descending gripper whenever the base had tilted a few mm since the
+        grasp: the soft grasp_fix weld flickered and the jammed bottle levered
+        wrist_rotate half a turn to its limit (-3.14 rad against 0.08 commanded).
         """
         last = self._last_grasp_xy
         if last is not None and math.hypot(x - last[0], y - last[1]) < 0.06:
             x, y = last        # the arm is over the point it actually grasped
         if place_z is None:
-            place_z = (self._last_grasp_z or self.table_surface_z + 0.10) - 0.003
+            place_z = (self._last_grasp_z or self.table_surface_z + 0.10) + PLACE_CLEARANCE
         approach_z = place_z + 0.10
 
         rospy.loginfo("[arm] Place: xy=(%.3f,%.3f)  place_z=%.3f", x, y, place_z)
@@ -253,6 +259,21 @@ class GraspExecutor:
         #    and gazebo_grasp_fix re-attaches on ANY new contact within one
         #    20 Hz update (grip_count_threshold=1 — required for the original
         #    grasp to attach at all).
+        #
+        # MEASURED 2026-10-01: a retry-if-stuck loop was tried here (nudge
+        # closed, reopen, if the gripper hadn't reached near FINGER_OPEN) and
+        # made things WORSE, not better — 5 live trials afterward threw the
+        # bottle clear off the table twice (z~0.03, once at (-1.15,-2.10)) vs.
+        # 0/2 before it. Mechanism: detach destroys the rigid attach joint
+        # while the finger/object meshes are still overlapping by ~SQUEEZE
+        # (the stiff kp=1e6 contact resolves that in one violent burst, which
+        # is what lets the object swing back into both fingers and re-attach
+        # in the first place) — a second blind open commands the SAME fast,
+        # energetic motion into whatever chaotic, unpredictable pose that
+        # burst left the object in, compounding rather than settling it.
+        # Reverted to the single open. The real fix has to stop the squeeze
+        # from leaving real mesh interpenetration at release time (or release
+        # far more slowly), not retry a motion that is itself the problem.
         self.arm.hold(0.8)
         self.gripper.send(FINGER_OPEN, move_time=1.0)
         self.gains.release()   # back to the tuned baseline; no-op until a delta exists
@@ -316,8 +337,18 @@ class GraspExecutor:
     def _approach_pregrasp(self, x, y, z, ori):
         """Collision-aware Cartesian move to the pre-grasp offset pose, with the
         target + neighbours still obstacles — the arm stops CLEAR at the standoff.
-        Returns True if a collision-free path was found & executed; on low
-        coverage it logs and returns False."""
+
+        Returns (approach_ok, obstacle_blocked):
+          approach_ok      — a collision-free path was found & executed.
+          obstacle_blocked — only meaningful when approach_ok is False: the
+                             SAME path re-planned with collisions OFF reaches
+                             the standoff fine, so a scene obstacle (not
+                             kinematics) is what's blocking it. Defaults to
+                             False (the caller's existing "shrink the offset"
+                             response) if that check itself can't run —
+                             diagnostics must never change behaviour on their
+                             own failure.
+        """
         p = Pose()
         p.position.x, p.position.y, p.position.z = x, y, z
         p.orientation = ori
@@ -331,14 +362,40 @@ class GraspExecutor:
                 rospy.loginfo("[arm] Pre-grasp: collision-aware move to offset "
                               "(cov=%.0f%%, %.1fs, attempt %d)", frac * 100, dur, attempt)
                 rospy.sleep(dur + 0.4)
-                return True
+                return True, False
             # Re-settle to zero the low-gain joints' position error and retry once
             # (collision-aware Cartesian coverage is start-state sensitive, same as
             # the descent's proven re-seat retry).
             self.arm.hold(0.6)
         rospy.logwarn("[arm] Pre-grasp collision-aware path low cov (%.0f%%) — "
                       "standoff may be blocked; proceeding to descent", frac * 100)
-        return False
+        return False, self._pregrasp_obstacle_blocked(p, frac)
+
+    def _pregrasp_obstacle_blocked(self, p, frac):
+        """Both attempts above failed with collisions ON — is the standoff
+        reachable at all (same path, collisions OFF)? The two failure modes
+        need OPPOSITE responses from the caller's retry: a scene obstacle (the
+        padded target box, the table, a neighbour) clipping an otherwise-fine
+        path wants MORE room, so moving closer (the old retry's only move,
+        "shrink the offset") makes it worse, not better — measured live
+        2026-10-01, a sequence got WORSE across retries (19%->39%->0%->0%)
+        while shrinking toward the object every one of those times was later
+        confirmed obstacle-blocked, never kinematics. A pose that's hard for
+        the IK solver from the arm's current joint state regardless of
+        obstacles — the same class of problem as the forearm_roll wrist-flip
+        fixed elsewhere — is genuinely helped by getting closer."""
+        try:
+            _, f_off = self.move_group.compute_cartesian_path([p], 0.005, False)
+        except Exception as e:      # diagnostics must never break a grasp
+            rospy.logwarn("[arm] could not classify the low-coverage approach: %s", e)
+            return False
+        blocked = f_off >= 0.80
+        rospy.logwarn(
+            "[arm] Low-coverage standoff approach (%.0f%% with collisions ON): "
+            "same path with collisions OFF: %.0f%% -> %s", frac * 100, f_off * 100,
+            "a scene obstacle is blocking an otherwise-reachable pose" if blocked
+            else "not reachable even without obstacles — an IK/seed problem")
+        return blocked
 
     def _explain_short_leg(self, legs, cart_plan, fraction):
         """A short straight-in leg with collision checking OFF is an IK failure
@@ -499,7 +556,7 @@ class GraspExecutor:
         verdict, reason, meas = None, "", None
         approach_ok = False
         for attempt in (1, 2):
-            approach_ok = self._approach_pregrasp(*pre_xyz, descent_ori)
+            approach_ok, obstacle_blocked = self._approach_pregrasp(*pre_xyz, descent_ori)
             meas = self.diag.pregrasp(*pre_xyz, descent_ori)
             verdict, reason = gg.pregrasp_verdict(
                 meas, live_param("pregrasp_pos_tol_mm", PREGRASP_POS_TOL_MM),
@@ -514,19 +571,32 @@ class GraspExecutor:
                     rospy.loginfo("[arm] Near miss — refining from the current "
                                   "pose (no re-seat)")
                 else:
-                    floor = plan["standoff_offset_min"]
-                    new_offset = max(floor, offset - 0.02)
-                    if new_offset < offset - 1e-6:
-                        offset = new_offset
-                        pre_xyz, _ = gg.pregrasp_pose(grasp_xyz, grasp_quat, offset)
-                        rospy.logwarn("[arm] Standoff unreachable from here — "
-                                      "closing the offset to %.3fm (floor %.3fm, "
-                                      "still outside the padded target box) and "
-                                      "re-seating", offset, floor)
+                    if obstacle_blocked:
+                        # A scene obstacle blocked the path to an otherwise-
+                        # reachable standoff — shrinking the offset moves TOWARD
+                        # the thing blocking it, making this worse, not better
+                        # (see _pregrasp_obstacle_blocked). Re-seat at the SAME
+                        # offset: a different start pose takes a different
+                        # swing, which may clear the obstacle this time, without
+                        # giving up any of the clearance the offset was sized for.
+                        rospy.logwarn("[arm] Standoff blocked by a scene obstacle, "
+                                      "not out of reach — re-seating at the same "
+                                      "offset (%.3fm) instead of moving closer to "
+                                      "what's blocking it", offset)
                     else:
-                        rospy.logwarn("[arm] Standoff unreachable and already at "
-                                      "the minimum safe offset (%.3fm) — re-seating "
-                                      "and retrying unchanged", offset)
+                        floor = plan["standoff_offset_min"]
+                        new_offset = max(floor, offset - 0.02)
+                        if new_offset < offset - 1e-6:
+                            offset = new_offset
+                            pre_xyz, _ = gg.pregrasp_pose(grasp_xyz, grasp_quat, offset)
+                            rospy.logwarn("[arm] Standoff unreachable from here — "
+                                          "closing the offset to %.3fm (floor %.3fm, "
+                                          "still outside the padded target box) and "
+                                          "re-seating", offset, floor)
+                        else:
+                            rospy.logwarn("[arm] Standoff unreachable and already at "
+                                          "the minimum safe offset (%.3fm) — re-seating "
+                                          "and retrying unchanged", offset)
                     self.arm.send_joints(ready_pose, move_time=2.5)
                     self.arm.hold(0.8)
                     descent_ori = self.move_group.get_current_pose().pose.orientation
@@ -694,7 +764,8 @@ class GraspExecutor:
             self.arm.hold(0.8)
             descent_ori = self.move_group.get_current_pose().pose.orientation
             _wp = self._wp_for(descent_ori)   # rebind: waypoints carry the orientation
-            if not self._approach_pregrasp(*pg["pre_xyz"], descent_ori):
+            approach_ok, _ = self._approach_pregrasp(*pg["pre_xyz"], descent_ori)
+            if not approach_ok:
                 rospy.logwarn("[arm] Could not re-take the standoff — aborting "
                               "rather than driving in from the ready pose")
                 return False, {"phase": "descent", "verified": False,
