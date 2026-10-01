@@ -64,6 +64,16 @@ REACH_MIN = 0.33
 # joint reading" hold() warnings and the grip destabilising right after closing
 # have both been traced to.
 WRIST_FLIP_THRESHOLD = 1.5
+
+# Staged release (place(), see its own comment) — small, slow opening steps so
+# whichever step finally crosses grasp_fix's release_tolerance leaves only
+# ~RELEASE_STEP of real mesh overlap still to resolve, not the whole squeeze
+# depth. RELEASE_STEPS * RELEASE_STEP = 24 mm covers a full/tapered close's
+# entire travel (FINGER_OPEN - FINGER_CLOSE = 27 mm); the final explicit open
+# in place() covers whatever's left either way.
+RELEASE_STEP = 0.004
+RELEASE_STEP_TIME = 0.6
+RELEASE_STEPS = 6
 # Default place height above the grasp height (m) — see place().
 PLACE_CLEARANCE = 0.005
 
@@ -253,29 +263,40 @@ class GraspExecutor:
             rospy.logwarn("[arm] Place descent only %.0f%% — releasing in place",
                           frac * 100)
 
-        # 2. Settle, then OPEN — always. Opening wide moves the finger contact
-        #    points past the grasp-fix release tolerance, so the weld detaches.
-        #    A released, low-gripped (top-heavy) object can topple immediately,
-        #    and gazebo_grasp_fix re-attaches on ANY new contact within one
-        #    20 Hz update (grip_count_threshold=1 — required for the original
-        #    grasp to attach at all).
+        # 2. Settle, then OPEN — always, but SLOWLY and in small steps rather
+        #    than one fast move. grasp_fix attaches the object to the PALM, not
+        #    the fingers, so while still attached the object's pose is fixed to
+        #    the arm regardless of finger position — opening is free to do
+        #    gradually with zero risk to the object. That matters because the
+        #    squeeze deliberately leaves the finger/object meshes overlapping
+        #    by ~SQUEEZE at close; release_tolerance (how far a finger has
+        #    moved AWAY from the object since attach) gets crossed early in a
+        #    single fast open, destroying the rigid joint while that overlap
+        #    is still real, and the stiff kp=1e6 contact then resolves it in
+        #    one violent burst — which is what lets the object swing back into
+        #    both open fingers and re-attach by accident (see
+        #    urdf/grasp_fix.urdf.xacro's release_tolerance comment). A second
+        #    blind full-speed open was tried to shake loose a stuck re-attach
+        #    and made things WORSE (5 live trials afterward threw the bottle
+        #    clear off the table twice vs. 0/2 before it) — it just injects
+        #    the SAME energetic motion into an already-chaotic pose.
         #
-        # MEASURED 2026-10-01: a retry-if-stuck loop was tried here (nudge
-        # closed, reopen, if the gripper hadn't reached near FINGER_OPEN) and
-        # made things WORSE, not better — 5 live trials afterward threw the
-        # bottle clear off the table twice (z~0.03, once at (-1.15,-2.10)) vs.
-        # 0/2 before it. Mechanism: detach destroys the rigid attach joint
-        # while the finger/object meshes are still overlapping by ~SQUEEZE
-        # (the stiff kp=1e6 contact resolves that in one violent burst, which
-        # is what lets the object swing back into both fingers and re-attach
-        # in the first place) — a second blind open commands the SAME fast,
-        # energetic motion into whatever chaotic, unpredictable pose that
-        # burst left the object in, compounding rather than settling it.
-        # Reverted to the single open. The real fix has to stop the squeeze
-        # from leaving real mesh interpenetration at release time (or release
-        # far more slowly), not retry a motion that is itself the problem.
+        #    Opening a few mm at a time instead means whenever release_tolerance
+        #    does fire — could be the first step or the fourth, depending on
+        #    how deep this grasp's squeeze was — the overlap still left to
+        #    resolve is bounded to about one step's worth, not the whole
+        #    squeeze depth, regardless of the object's shape or how far this
+        #    particular close travelled. RELEASE_STEPS * RELEASE_STEP covers
+        #    even a full/tapered close's entire range; the final explicit
+        #    FINGER_OPEN command guarantees release completes either way.
         self.arm.hold(0.8)
-        self.gripper.send(FINGER_OPEN, move_time=1.0)
+        pos = self.gripper.position
+        for _ in range(RELEASE_STEPS):
+            if pos >= FINGER_OPEN - 1e-6:
+                break
+            pos = min(FINGER_OPEN, pos + RELEASE_STEP)
+            self.gripper.send(pos, move_time=RELEASE_STEP_TIME)
+        self.gripper.send(FINGER_OPEN, move_time=0.5)
         self.gains.release()   # back to the tuned baseline; no-op until a delta exists
         # Also drop the MoveIt attachment so future plans are clean.
         self.scene.detach()
