@@ -37,7 +37,7 @@ DIM_CALIB_WINDOW = 20
 # same size blocked the approach corridor ("path blocked by person"). Anything
 # that is neither a catalogued object nor the table surface is capped to what can
 # plausibly stand on this table (the largest catalogued object is 0.07 m).
-MAX_UNCATALOGUED_FOOTPRINT = 0.15
+MAX_UNCATALOGUED_FOOTPRINT = 0.08
 POSITION_BUFFER = 8
 RECENT_WINDOW_S = 1.5
 # How long an empty frame may be answered with the last non-empty one.
@@ -205,9 +205,12 @@ class WorldModel:
 
     def obstacles(self):
         """Collision boxes for every NON-target, NON-surface object in the
-        latest frame, sized from the calibration where available (a
-        close-range frame is the worse size estimate, by the same measurement
-        that motivates the calibration).
+        latest frame. A label that names exactly one catalogued object takes
+        that object's catalogue size: YOLO reads these small objects 8-11 mm
+        too wide (a 45 mm can as 56 mm), which narrows the corridor between
+        neighbours for nothing. Otherwise the size comes from the calibration
+        where available (a close-range frame is the worse size estimate, by
+        the same measurement that motivates the calibration).
 
         Surface labels (the table) are excluded here, not just left uncapped:
         the table already has its own dedicated collision box (table_box(),
@@ -225,7 +228,10 @@ class WorldModel:
             label = normalize(d.get("class_name", ""))
             if label in surface:
                 continue
-            cd = self.calibrated_dims(self.calib_key(label)) if label else None
+            keys = self.catalog.keys_for_label(label) if label else []
+            size = self.catalog.size(keys[0]) if len(keys) == 1 else None
+            cd = ([size[2], size[1], size[0]] if size is not None      # (x, y, z) -> [H, W, L]
+                  else self.calibrated_dims(self.calib_key(label)) if label else None)
             d2 = dict(d, is_target=self.resolver.matches(self.target_name, d))
             if cd is not None:
                 d2["dims_hwl"] = cd

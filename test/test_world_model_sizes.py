@@ -11,6 +11,7 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, "..", "scripts"))
 from resolver import CatalogResolver, ObjectCatalog  # noqa: E402
+from grasp_geometry import OBSTACLE_PAD  # noqa: E402
 from world_model import MAX_UNCATALOGUED_FOOTPRINT, WorldModel  # noqa: E402
 
 CATALOG = ObjectCatalog.from_yaml(os.path.join(_HERE, "..", "config", "objects.yaml"))
@@ -34,18 +35,20 @@ def test_the_logged_phantom_person_is_capped():
     m = _model()
     m.update([_det("person", (0.498, 0.254, 0.306), (0.114, 0.6, 0.6))], 0.0, None)
     b = _box_for(m, "person")
-    assert b["sx"] <= MAX_UNCATALOGUED_FOOTPRINT + 0.04 + 1e-9, b
+    assert b["sx"] <= MAX_UNCATALOGUED_FOOTPRINT + 2 * OBSTACLE_PAD + 1e-9, b
     # the arm's ready pose (EE ~ (0.31, 0.01), the links a few cm either side)
     # must be clear of it in y: box spans y in [0.254 - sx/2, 0.254 + sx/2]
     assert b["y"] - b["sy"] / 2 > 0.10, b
 
 
-def test_catalogued_and_surface_objects_keep_their_measured_size():
+def test_catalogued_obstacle_takes_its_catalogue_size_and_the_table_keeps_its_own():
+    """YOLO reads the 45 mm can as 55 mm; as a neighbour's collision box it is
+    sized from the catalogue instead."""
     m = _model()
     m.update([_det("cell phone", (0.45, 0.20, 0.30), (0.096, 0.055, 0.055)),
               _det("dining table", (0.66, 0.0, 0.25), (0.02, 0.40, 0.80))], 0.0, None)
     can = _box_for(m, "cell phone")
-    assert math.isclose(can["sx"], 0.055 + 0.04), can
+    assert math.isclose(can["sx"], 0.045 + 2 * OBSTACLE_PAD), can
     tbl = next(d for d in m.latest if d["class_name"] == "dining table")
     assert tbl["dims_hwl"] == [0.02, 0.40, 0.80], tbl
 
@@ -53,7 +56,7 @@ def test_catalogued_and_surface_objects_keep_their_measured_size():
 def test_a_plausible_uncatalogued_object_is_untouched():
     m = _model()
     m.update([_det("cup", (0.45, 0.20, 0.30), (0.10, 0.08, 0.08))], 0.0, None)
-    assert math.isclose(_box_for(m, "cup")["sx"], 0.08 + 0.04)
+    assert math.isclose(_box_for(m, "cup")["sx"], 0.08 + 2 * OBSTACLE_PAD)
 
 
 def test_surface_label_is_not_a_generic_obstacle():

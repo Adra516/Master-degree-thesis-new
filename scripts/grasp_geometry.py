@@ -368,7 +368,13 @@ def pregrasp_pose(grasp_xyz, quat, offset=PREGRASP_STANDOFF_OFFSET):
     return [float(pre[0]), float(pre[1]), float(pre[2])], list(quat)
 
 
-def obstacle_boxes(detections, target_name, table_z, pad=0.02):
+# Air added to each side of a neighbour's box. 20 mm, on top of YOLO widths that
+# read 8-11 mm wide, left too narrow a corridor for the open gripper between
+# objects 10 cm apart once the grasp is low enough to pass between them.
+OBSTACLE_PAD = 0.015
+
+
+def obstacle_boxes(detections, target_name, table_z, pad=OBSTACLE_PAD):
     """Collision boxes for every NON-target detected object.
 
     Orientation is unknown, so each is a conservative axis-aligned box with a
