@@ -38,7 +38,9 @@ objects:
   can_coke:
     names: [coke can, cancoke, coke, can, soda can]
     yolo_labels: [cell phone]
-    size: {x: 0.055, y: 0.055, z: 0.096}
+    # Measured from the model's meshes at its 0.63 scale: 44.7 mm diameter,
+    # 81.6 mm tall (not the 55 x 96 mm the model.sdf comment states).
+    size: {x: 0.045, y: 0.045, z: 0.082}
 
   ball:
     # 70 mm tall: too short for any side grasp (the grip-height rule rejects it
