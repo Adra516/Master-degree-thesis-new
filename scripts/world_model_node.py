@@ -54,6 +54,7 @@ from cv_bridge import CvBridge
 from geometry_msgs.msg import Point, PoseStamped, Vector3, PointStamped
 from moveit_msgs.srv import GetPositionIK, GetPositionIKRequest
 from sensor_msgs.msg import CameraInfo, Image, JointState
+from std_msgs.msg import Float64
 
 # See arm_node.py's identical comment: roslaunch execs this file through a
 # devel/lib/ wrapper, so __file__'s own directory must be added explicitly
@@ -86,6 +87,13 @@ from locobot_prog.srv import (ApproachTarget, ApproachTargetRequest,
 # The grasp point trusts a target lock at most this old (positioning uses 2 s):
 # the robot has been standing still since it aligned.
 GRASP_MAX_LOCK_AGE = 3.0
+# After a camera tilt command: the head settles and perception delivers frames
+# of the new view before anything reads the target again.
+TILT_SETTLE_S = 2.0
+# Before planning the grasp: how long to wait for a frame that contains the
+# target, so the depth planner can measure it (tries x seconds).
+IN_FRAME_WAIT_TRIES = 10
+IN_FRAME_WAIT_S = 0.4
 # A grasp counts as holding the object above this measured finger position.
 # A base tilt/creep smaller than this is left to the arm's own re-aim; a larger one
 # is worth re-taking the pre-grasp for (see TaskOrchestrator._settled_shift).
@@ -438,6 +446,17 @@ class TaskOrchestrator:
         except rospy.ROSException:
             rospy.logwarn("[task] compute_ik unavailable — using fixed grasp_dist")
 
+        # Camera tilt, by range. Measured in Gazebo: from the standoff the 25 cm
+        # bottle fills 413 of the 480 image rows, so only a tilt near 0.45 rad
+        # shows it whole (0.35 cuts its base, 0.55 its top) — and the 8-9 cm tea
+        # box and can sit below the frame entirely at 0.35. From the start pose
+        # 0.35 is the better view (0.45 puts the bottle's top on the frame edge).
+        self.tilt_far = float(rospy.get_param("~camera_tilt_far", 0.35))
+        self.tilt_near = float(rospy.get_param("~camera_tilt_near", 0.45))
+        self._tilt = None
+        self._tilt_pub = rospy.Publisher(f"/{ns}/tilt_controller/command", Float64,
+                                         queue_size=1, latch=True)
+
         self._ground_truth = None     # Gazebo, only when a diag model is named
         self._ref_point = None        # (x, y, z) in base_link of the point last cached in the odometry memory
 
@@ -449,6 +468,26 @@ class TaskOrchestrator:
 
     def _on_joint_state(self, msg):
         self._joint_state = msg
+
+    def _set_tilt(self, tilt):
+        """Point the camera at `tilt` rad and wait for frames from the new view.
+        Does nothing when it is already there."""
+        if self._tilt == tilt:
+            return
+        self._tilt_pub.publish(Float64(tilt))
+        self._tilt = tilt
+        rospy.sleep(TILT_SETTLE_S)
+
+    def _wait_in_frame(self, target_name, st):
+        """`st`, or a newer target state in which the target is in the current
+        camera frame, waiting briefly for one. Returns the last state read when
+        none arrives."""
+        for _ in range(IN_FRAME_WAIT_TRIES):
+            if st.in_frame:
+                break
+            rospy.sleep(IN_FRAME_WAIT_S)
+            st = self.get_target(target_name=target_name).state
+        return st
 
     def _remember(self, action, position=None):
         """target_memory MEASURE/SET that also keeps the cached point. REPROJECT
@@ -527,6 +566,7 @@ class TaskOrchestrator:
     def _navigate(self, target_name):
         """Observe, choose the standoff, and put the base there. Returns the
         context the grasp needs; raises _Failed with the reply otherwise."""
+        self._set_tilt(self.tilt_far)
         # 1. Observe. An empty frame is answered from the recent cache; with no
         #    detections and no lock at all, give perception a moment.
         s = self.get_scene(target_name=target_name, use_cache=True)
@@ -599,6 +639,7 @@ class TaskOrchestrator:
         #    still: a lock made 12 s earlier and reprojected through open-loop
         #    drive odometry once put the grasp 5-6 cm past the real bottle.
         self.set_arm_pose(pose_name="camera_clear")
+        self._set_tilt(self.tilt_near)   # the whole target in frame, base to top
         rospy.sleep(1.2)   # let perception deliver frames of the unobstructed scene
         st = self.get_target(target_name=target_name).state
         # A single read here can catch perception between frames (a live pick
@@ -611,6 +652,14 @@ class TaskOrchestrator:
         # FRESH detection before accepting a stale one -- cheap when perception
         # is already fine (breaks out immediately), and turns a fixable timing
         # gap into a correct grasp instead of a silent no-op.
+        # The depth planner needs the target in the CURRENT frame, and a small
+        # object close up is detected only intermittently (the can at 0.40 m
+        # scores ~0.12 against a 0.10 threshold). Without this wait a fresh
+        # lock was enough to proceed, the plan fell to the bbox baseline, and
+        # the baseline's ASSUMED table height put the jaws ~20 mm too low on
+        # the can. Standing still, a detecting frame is a fraction of a second
+        # away.
+        st = self._wait_in_frame(target_name, st)
         for _ in range(4):
             if st.in_frame or (st.locked and st.lock_age < GRASP_MAX_LOCK_AGE):
                 break
@@ -703,7 +752,8 @@ class TaskOrchestrator:
             # Refresh st too: a corrected base pose means a new camera pose, so
             # the depth plan's buffered frame/TF lookup must describe THIS pose,
             # not the pre-correction one the original st still holds.
-            st = self.get_target(target_name=target_name).state
+            st = self._wait_in_frame(target_name,
+                                     self.get_target(target_name=target_name).state)
             plan_msg, tz = self._choose_plan(st, pos, dims, grasp_axis, tz)
             rospy.loginfo("[task] Re-positioned for pre-grasp retry: (%.3f, %.3f)", *pos)
         if not pre.success:
