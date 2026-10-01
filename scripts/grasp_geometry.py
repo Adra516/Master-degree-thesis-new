@@ -39,9 +39,29 @@ def finger_pos_for_width(width):
 def jaw_width(finger_pos):
     """Real pad-to-pad gap for a finger joint position."""
     return 2.0 * (finger_pos - PAD_INSET)
+
+
+# Mirrors grasp_planner.SIDE_CLEARANCE (duplicated, not imported: grasp_planner
+# already imports this module, so the reverse would be circular) — the minimum
+# room per side between the open jaws and the object for an approach that
+# doesn't clip it.
+JAW_CLEARANCE = 0.002
 # Assumed object size [H, W, L] when nothing was measured — only ever used to
 # size collision boxes, never to choose a grip.
 UNKNOWN_OBJECT_DIMS = (0.15, 0.06, 0.06)
+
+
+class ObjectTooWideForJaws(ValueError):
+    """The measured width at the grasp axis exceeds what the jaws can ever open
+    to, even with no clearance to spare.
+
+    Raised instead of silently committing to a grip the jaws cannot physically
+    close around. baseline_plan() has no per-band search to fall back on the
+    way grasp_planner.plan_from_points does — it is one guessed point, at the
+    object's own mid-height — so a target too wide there has no narrower spot
+    for baseline to try instead; the caller is left to keep whatever plan it
+    already had, or report the failure, rather than approach a point the jaws
+    were always going to fail to straddle."""
 
 
 class ObjectTooShortForSideGrasp(ValueError):
@@ -489,6 +509,19 @@ def baseline_plan(target_xy, dims_hwl, grasp_axis, table_z):
         # x = depth extent (L), y = width (W), z = height (H)
         "object_size": [float(size[2]), float(size[1]), float(size[0])],
     }
+    if dims_hwl is not None:
+        narrow_m = float(dims_hwl[1] if grasp_axis == "along_x" else dims_hwl[2])
+        jaw_max = jaw_width(FINGER_OPEN)
+        if narrow_m + 2 * JAW_CLEARANCE > jaw_max:
+            plan.update(valid=False,
+                        reason=(f"ObjectTooWideForJaws: {narrow_m*1000:.0f}mm "
+                                f"exceeds the jaws' {jaw_max*1000:.0f}mm max "
+                                "opening — no per-band search here to find a "
+                                "narrower spot, unlike the depth planner"),
+                        grasp_point=[float(target_xy[0]), float(target_xy[1]), table_z],
+                        grasp_orientation=[0.0, 0.0, 0.0, 1.0],
+                        gripper_open=FINGER_OPEN, gripper_close=FINGER_CLOSE)
+            return plan
     try:
         xyz, quat = grasp_pose(target_xy, dims_hwl, table_z)
     except ObjectTooShortForSideGrasp as e:

@@ -107,6 +107,19 @@ def test_close_target_accounts_for_the_pad_inset():
     assert abs(pad_depth - gp.SQUEEZE) < 1e-9, pad_depth
 
 
+def test_baseline_refuses_a_width_the_jaws_can_never_open_to():
+    """baseline_plan() has no per-band search to fall back on — it's one guess
+    at the object's mid-height — so unlike the depth planner it must refuse
+    outright rather than confidently aim at a width (e.g. a bottle's 64 mm
+    body) the 56 mm jaws can never straddle, which is what let that body look
+    plausible before gg.PAD_INSET existed (64 < the old, wrong 74 mm max)."""
+    plan = gg.baseline_plan((0.45, 0.0), [0.25, 0.064, 0.064], "along_x", 0.25)
+    assert not plan["valid"] and "exceeds the jaws" in plan["reason"], plan
+    # A width that DOES fit is unaffected.
+    plan = gg.baseline_plan((0.45, 0.0), [0.25, 0.028, 0.028], "along_x", 0.25)
+    assert plan["valid"], plan
+
+
 def test_catalogued_can_and_tea_box_are_too_wide_for_the_real_jaws():
     """The jaws open 56 mm pad to pad. The 55 mm coke can would leave 0.5 mm a
     side and the 60 mm tea box does not fit at all — in any orientation."""
