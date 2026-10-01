@@ -157,7 +157,7 @@
     </include>
     
     <!-- ── Tea box (replaces the tissue box — GRASP TARGET) ────────────────
-         Square-footprint box, rescaled in the model to 0.06 x 0.06 x 0.09 m.
+         Square-footprint box, rescaled in the model to 0.045 x 0.045 x 0.09 m.
          WHY those dimensions: with the top-down approach removed the grasp is
          HORIZONTAL only, and the jaws close at a floor of 7 cm above the table
          (_compute_grasp_z) — so the target must be TALLER than that (9 cm puts
@@ -182,35 +182,16 @@
       <static>false</static>
     </include>
 
-    <!-- Ball  r=0.035 m → z = 0.25+0.035 = 0.285
-         REVERTED from brick_sphere_1 (07-24): that textured mesh scored ZERO
-         YOLO detections in practice (measured on the user's machine), while
-         this plain primitive sphere WAS reliably recognized — a solid round
-         silhouette is apparently enough signal on its own (unlike the flat
-         primitive BOXES, which really do need texture).  Kept as a dynamic
-         body (rolls on contact) because YOLO-visibility matters more right
-         now than staying put. -->
-    <model name="ball">
-      <pose>0.70 -0.22 0.285 0 0 0</pose>
-      <link name="link">
-        <collision name="c">
-          <geometry><sphere><radius>0.035</radius></sphere></geometry>
-          <surface><friction><ode><mu>0.6</mu><mu2>0.6</mu2></ode></friction></surface>
-        </collision>
-        <visual name="v">
-          <geometry><sphere><radius>0.035</radius></sphere></geometry>
-          <material>
-            <ambient>0.7 0.05 0.05 1</ambient>
-            <diffuse>0.85 0.08 0.08 1</diffuse>
-          </material>
-        </visual>
-        <inertial>
-          <mass>0.156</mass>
-          <inertia><ixx>8.76e-5</ixx><iyy>8.76e-5</iyy><izz>8.76e-5</izz>
-                   <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
-        </inertial>
-      </link>
-    </model>
+    <!-- Ball, reshaped into an upright capsule (45 mm diameter x 120 mm tall,
+         same 0.156 kg) so the gripper can side-grasp it: the old 70 mm sphere
+         was both wider than the 56 mm jaws and too low for the grip-height
+         floor. Model origin is at its BASE, like the tea box and the can. -->
+    <include>
+      <uri>model://ball_capsule</uri>
+      <name>ball</name>
+      <pose>0.70 -0.22 0.251 0 0 0</pose>
+      <static>false</static>
+    </include>
 
   </world>
 </sdf>

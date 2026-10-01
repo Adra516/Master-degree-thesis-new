@@ -33,7 +33,7 @@ objects:
   tea_box:
     names: [tea box, teabox, tea]
     yolo_labels: [remote]
-    size: {x: 0.06, y: 0.06, z: 0.09}
+    size: {x: 0.045, y: 0.045, z: 0.09}
 
   can_coke:
     names: [coke can, cancoke, coke, can, soda can]
@@ -43,11 +43,12 @@ objects:
     size: {x: 0.045, y: 0.045, z: 0.082}
 
   ball:
-    # 70 mm tall: too short for any side grasp (the grip-height rule rejects it
-    # before the arm moves). Listed so it can be recognised and avoided.
+    # Reshaped into an upright capsule (models/ball_capsule) so the jaws can
+    # take it from the side; the YOLO label is still the old sphere's and has
+    # not been re-checked on the new shape.
     names: [ball, sports ball]
     yolo_labels: [sports ball]
-    size: {x: 0.07, y: 0.07, z: 0.07}
+    size: {x: 0.045, y: 0.045, z: 0.12}
 
   table:
     role: surface
