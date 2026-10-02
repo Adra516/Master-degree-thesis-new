@@ -25,6 +25,33 @@ if _YOLO3D_DIR not in sys.path:
 from bbox3d_utils import BBox3DEstimator, DEFAULT_DIMS    # DEFAULT_DIMS, _backproject_point, _estimate_orientation
 from detection_model import ObjectDetector  # YOLOv11 + multi-object tracking
 
+
+class _TunedBBox3DEstimator(BBox3DEstimator):
+    """BBox3DEstimator's Kalman + temporal smoothing (_apply_kalman_filter,
+    _apply_temporal_filter), with the measurement noise retuned for this
+    project's scale.
+
+    The library's own defaults (_init_kalman_filter: R location variance
+    1.0 -> ~1m std, dimension variance 0.01 -> ~10cm std, orientation
+    variance 0.3 -> ~31deg std) assume jitter sized for a street scene. Our
+    tabletop objects are tens of mm across with a few mm of per-frame jitter
+    (documented in world_model.py's own calibration-buffer comment) and tens
+    of degrees at most for the ray-based orientation estimate. Left at the
+    defaults, R is orders of magnitude larger than the real measurement
+    noise, so the Kalman gain stays low and the filter barely trusts new
+    measurements at all — it would lag badly behind a real change instead of
+    smoothing a noisy one. NOT used for estimate_3d_box() (that method's own
+    depth-value handling assumes Depth Anything v2's 0-1 relative output,
+    which does not apply here — this project computes metric position/size
+    itself and only wants the smoothing stage)."""
+
+    def _init_kalman_filter(self, box_3d):
+        kf = super()._init_kalman_filter(box_3d)
+        kf.R = np.diag([1e-4, 1e-4, 1e-4,   # location x,y,z: ~1cm std
+                        6e-5, 6e-5, 6e-5,   # dimensions w,h,l: ~8mm std
+                        0.0225])            # orientation: ~0.15rad (~9deg) std
+        return kf
+
 # Detections of these classes are always published (never filtered out by
 # target_classes below) — real-world obstacle/scene classes that matter
 # regardless of what's being picked. "person" is not in config/objects.yaml
@@ -90,7 +117,7 @@ class YoloDetectionNode:
         os.chdir(_cwd)
 
         self.K = None   # filled from camera_info
-        self.bbox3d = None   # BBox3DEstimator with real K
+        self.bbox3d = None   # _TunedBBox3DEstimator with real K
         self.bridge = CvBridge()
 
         self.det_pub = rospy.Publisher(f"/{ns}/locobot_prog/detections_3d", String, queue_size=5)
@@ -114,7 +141,7 @@ class YoloDetectionNode:
         if self.K is not None:
             return
         self.K = np.array(msg.K, dtype=np.float64).reshape(3, 3)
-        self.bbox3d = BBox3DEstimator(camera_matrix=self.K)
+        self.bbox3d = _TunedBBox3DEstimator(camera_matrix=self.K)
         self.camera_frame = msg.header.frame_id   # e.g. locobot/camera_color_optical_frame
         rospy.loginfo("[yolo3d] Camera ready. frame=%s  dims: %s",
                       self.camera_frame, list(self.bbox3d.dims.keys()))
@@ -150,6 +177,7 @@ class YoloDetectionNode:
         # ObjectDetector.detect() → (annotated_bgr, [[bbox, score, cls_id, obj_id], ...])
         annotated, raw_dets = self.detector.detect(bgr, track=True)
         detections = []
+        active_ids = []   # object_ids seen this frame, to drop stale Kalman tracks below
 
         for bbox, score, cls_id, obj_id in raw_dets:
             class_name = self.detector.model.names[cls_id].lower()
@@ -209,6 +237,30 @@ class YoloDetectionNode:
             # Ray-based yaw orientation estimate
             orientation = float(self.bbox3d._estimate_orientation([x1, y1, x2, y2], np.array(pos_cam), class_name))
 
+            # Smooth position/size/orientation across frames for this tracked
+            # object (Kalman, then an EMA over its own recent history — see
+            # _TunedBBox3DEstimator above). Only possible with a stable
+            # object_id from the tracker; an untracked detection is published
+            # raw. Smooths position_base/dims_hwl/orientation only —
+            # position_cam and depth_m stay the raw per-frame measurement,
+            # since they are diagnostic/intermediate values here, not what
+            # downstream planning reads.
+            if obj_id is not None:
+                active_ids.append(int(obj_id))
+                box_3d = {"dimensions": np.array(dims_hwl, dtype=float),
+                          "location": np.array(pos_base, dtype=float),
+                          "orientation": orientation, "bbox_2d": [x1, y1, x2, y2],
+                          "object_id": obj_id, "class_name": class_name}
+                box_3d = self.bbox3d._apply_kalman_filter(box_3d, obj_id)
+                hist = self.bbox3d.box_history[obj_id]
+                hist.append(box_3d)
+                if len(hist) > self.bbox3d.max_history:
+                    hist.pop(0)
+                box_3d = self.bbox3d._apply_temporal_filter(obj_id)
+                pos_base = box_3d["location"].tolist()
+                dims_hwl = box_3d["dimensions"].tolist()
+                orientation = float(box_3d["orientation"])
+
             detections.append({
                 "class_name":   class_name,
                 "confidence":   round(float(score), 3),
@@ -222,6 +274,7 @@ class YoloDetectionNode:
                 "is_target":    class_name == self.target_object or class_name in self.target_aliases,
             })
 
+        self.bbox3d.cleanup_trackers(active_ids)
         self.det_pub.publish(String(data=json.dumps(detections)))
         try:
             self.img_pub.publish(self.bridge.cv2_to_imgmsg(annotated, "bgr8"))
