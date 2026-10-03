@@ -48,10 +48,10 @@ def test_catalogued_obstacle_takes_its_catalogue_size_and_the_table_keeps_its_ow
     old "cell phone" COCO alias — same object, current reality."""
     m = _model()
     m.update([_det("can_coke", (0.45, 0.20, 0.30), (0.096, 0.055, 0.055)),
-              _det("dining table", (0.66, 0.0, 0.25), (0.02, 0.40, 0.80))], 0.0, None)
+              _det("table", (0.66, 0.0, 0.25), (0.02, 0.40, 0.80))], 0.0, None)
     can = _box_for(m, "can_coke")
     assert math.isclose(can["sx"], 0.045 + 2 * OBSTACLE_PAD), can
-    tbl = next(d for d in m.latest if d["class_name"] == "dining table")
+    tbl = next(d for d in m.latest if d["class_name"] == "table")
     assert tbl["dims_hwl"] == [0.02, 0.40, 0.80], tbl
 
 
@@ -62,19 +62,22 @@ def test_a_plausible_uncatalogued_object_is_untouched():
 
 
 def test_surface_label_is_not_a_generic_obstacle():
-    """Regression for obs_dining table_0: the table is already modelled by its
-    own dedicated table_box()/TableEstimate, and a surface label's size is
-    deliberately NOT capped by _plausible_size (needed so the table keeps its
-    real, large footprint there) — so feeding it through obstacle_boxes() too
-    can produce a second, huge, uncapped phantom copy of the table. Measured
-    live: 0.51 x 0.51 x 0.21 m, centred in the approach corridor, 0% pre-grasp
-    Cartesian coverage. A "dining table" detection must not appear in
-    obstacles() at all, whatever its reported size."""
+    """Regression for obs_dining table_0 (now obs_table_0 — label updated
+    2026-10-03 when "table" became the fine-tuned model's own real class
+    instead of the old "dining table" COCO alias; the underlying bug this
+    guards is unchanged): the table is already modelled by its own dedicated
+    table_box()/TableEstimate, and a surface label's size is deliberately NOT
+    capped by _plausible_size (needed so the table keeps its real, large
+    footprint there) — so feeding it through obstacle_boxes() too can produce
+    a second, huge, uncapped phantom copy of the table. Measured live:
+    0.51 x 0.51 x 0.21 m, centred in the approach corridor, 0% pre-grasp
+    Cartesian coverage. A "table" detection must not appear in obstacles()
+    at all, whatever its reported size."""
     m = _model()
-    m.update([_det("dining table", (0.562, 0.0, 0.336), (0.211, 0.511, 0.511)),
+    m.update([_det("table", (0.562, 0.0, 0.336), (0.211, 0.511, 0.511)),
               _det("can_coke", (0.45, 0.20, 0.30), (0.096, 0.055, 0.055))], 0.0, None)
     names = [b["name"] for b in m.obstacles()]
-    assert not any("dining table" in n or "table" in n for n in names), names
+    assert not any("table" in n for n in names), names
     assert any("can_coke" in n for n in names), names   # real obstacles still appear
 
 

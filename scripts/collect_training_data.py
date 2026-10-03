@@ -62,7 +62,16 @@ from resolver import ObjectCatalog
 # match this list regardless of collection order. Keep this list in sync with
 # config/objects.yaml; a catalogued object missing here is simply never
 # labeled (skipped with a one-time warning), not an error.
-CLASS_NAMES = ["bottle", "tea_box", "can_coke", "ball"]
+# "table", not "dining_table": matches this project's own catalogue key
+# (config/objects.yaml) and the Gazebo model's own name (<model name="table">
+# in locobot_table_arm.world), consistent with how the other 4 classes are
+# named after their catalogue key rather than a COCO label. The table is
+# `role: surface` in the catalogue but that only matters to the live
+# pipeline's obstacle logic — catalog.size() ignores it, so the table is
+# labeled exactly like any other catalogued object here (its static box:
+# 0.40 x 0.80 x 0.25 m, origin at floor level, matching every other object's
+# "origin is the BASE" convention already assumed below).
+CLASS_NAMES = ["bottle", "tea_box", "can_coke", "ball", "table"]
 # Catalogue key -> Gazebo model name. Matches this project's world file
 # (locobot_table_arm.world's <name> tags) directly for every current class;
 # override here if a future world spawns an object under a different name.

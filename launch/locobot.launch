@@ -46,11 +46,12 @@
   <!-- This arg's value flows down INTO vision_nodes.launch (line ~206),
        overriding that file's own default entirely — so the real effective
        default is set HERE, not there. Found live: after updating
-       vision_nodes.launch's default to the 2026-10-03 fine-tune, the node
+       vision_nodes.launch's default to the finetune1 model, the node
        still loaded "yolov8n.pt" (the stock COCO model) because this
-       default won.  See vision_nodes.launch's yolo_model arg for what the
-       fine-tune is and its one trade-off. -->
-  <arg name="yolo_model"                        default="/home/adrana/th_ws/YOLO3D/yolo11s_locobot_finetune1.pt"/>
+       default won. See vision_nodes.launch's yolo_model arg for what the
+       current fine-tune (finetune2, 5 classes incl. the table) is and its
+       one remaining gap. -->
+  <arg name="yolo_model"                        default="/home/adrana/th_ws/YOLO3D/yolo11s_locobot_finetune2.pt"/>
   <arg name="use_vlm_agent"                     default="true"/>
   <arg name="vlm_model"                         default="qwen3-vl:2b-instruct"/>
   <arg name="vlm_ollama_api_url"                default="http://localhost:11434/api/chat"/>

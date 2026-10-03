@@ -22,19 +22,20 @@
 #
 # Units: metres.
 #
-# 2026-10-03: yolo_labels for bottle/tea_box/can_coke/ball switched from
-# measured COCO aliases to the objects' own real names. This project now runs
-# a model fine-tuned on these 4 objects directly (vision_nodes.launch's
-# yolo_model), which reports them as themselves instead of guessing the
-# nearest COCO class it half-recognises them as. table's entry is UNCHANGED
-# (still "dining table", a COCO class) because the fine-tune was NOT trained
-# on the table — it is a 4-class-only model and will never report this label
-# again; left as-is because the fallback this starves (world_table.py's
-# TableEstimate, used only as a seed/for a MoveIt obstacle box and scene-
-# summary text) already has a tested "never seen the table" path, and the
-# actual grasp-height correction is unaffected — footprint.table_height()
-# independently re-measures the table surface from the depth image on every
-# pick, using this only as its initial guess, not as the final answer.
+# 2026-10-03: yolo_labels for all 5 catalogued objects (bottle/tea_box/
+# can_coke/ball/table) switched from measured COCO aliases to the objects'
+# own real names. This project now runs a model fine-tuned on these 5
+# objects directly (vision_nodes.launch's yolo_model), which reports them as
+# themselves instead of guessing the nearest COCO class it half-recognises
+# them as. table was added second (a separate retrain, finetune2, after the
+# first 4-class finetune1 shipped without it — the detection head's size is
+# fixed per training run, so adding a class needs a fresh fine-tune, not a
+# resume) specifically because losing "dining table" detection meant losing
+# general scene-obstacle awareness of it; now restored, and
+# world_table.py's TableEstimate gets real detections again instead of only
+# ever taking its "never seen the table" fallback path. "person" is still
+# NOT a trained class (no person model exists in this project's worlds) —
+# that gap remains, should one ever be added to a scene.
 version: 1
 
 objects:
@@ -67,5 +68,9 @@ objects:
   table:
     role: surface
     names: [table, dining table]
-    yolo_labels: [dining table]   # never reported by the fine-tuned model — see header
+    # 2026-10-03: the fine-tune now includes the table as a 5th trained class
+    # (719 auto-labeled frames of it; held-out validation mAP50-95 0.995 —
+    # the single best-performing class of the five), so this is now also the
+    # model's own real label, same as the other 4 — not the old COCO alias.
+    yolo_labels: [table]
     size: {x: 0.40, y: 0.80, z: 0.25}

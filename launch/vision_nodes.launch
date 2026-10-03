@@ -12,21 +12,22 @@
   <arg name="grasp_min_interval_s" default="5.0"/>
 
   <!-- YOLO args -->
-  <!-- The 2026-10-02 fine-tune on this project's own 4 catalogued objects
-       (591 auto-labeled Gazebo frames; mAP50 0.995, mAP50-95 0.986 on a held-
-       out split), replacing the stock COCO-pretrained model's class-confusion
-       (can/tea_box both "cell phone", the capsule getting no class at all).
-       This param used to be declared but never actually read by
-       yolo_detection_node.py (and pointed at a directory, YOLO-3D, that
+  <!-- Fine-tuned on this project's own 5 catalogued objects (bottle, tea_box,
+       can_coke, ball, table), replacing the stock COCO-pretrained model's
+       class-confusion (can/tea_box both "cell phone", the capsule getting no
+       class at all, the table only ever guessable as "dining table").
+       finetune1 (2026-10-02, 591 frames) covered the first 4; finetune2
+       (2026-10-03, 1310 frames, mAP50 0.989/mAP50-95 0.984 overall on a
+       held-out split — table itself scored mAP50-95 0.995, the best of the
+       five) added the table, a separate retrain from the stock checkpoint
+       rather than a resume (the detection head's output size is fixed per
+       training run). This param used to be declared but never actually read
+       by yolo_detection_node.py (and pointed at a directory, YOLO-3D, that
        doesn't exist — "YOLO3D", no hyphen, is the real one); both fixed
-       together. See docs/ or the yolo-finetune-dataset memory for how this
-       was trained, and its one real trade-off: this model knows ONLY these
-       4 classes, so it can no longer detect "dining table"/"person"/any
-       uncatalogued object at all (the stock model at least mislabeled them
-       as SOME COCO class; this one sees nothing). Table-height accuracy for
-       grasping is unaffected (footprint.table_height() re-measures it from
-       the depth image directly, this YOLO label was only ever its seed). -->
-  <arg name="yolo_model"          default="/home/adrana/th_ws/YOLO3D/yolo11s_locobot_finetune1.pt"/>
+       together. See the yolo-finetune-dataset memory for how this was
+       trained. Remaining gap: "person" is still not a trained class (no
+       person model exists in this project's worlds). -->
+  <arg name="yolo_model"          default="/home/adrana/th_ws/YOLO3D/yolo11s_locobot_finetune2.pt"/>
   <arg name="yolo_process_rate"   default="5.0"/>
   <!-- Empty by default: yolo_detection_node then derives its class filter
        automatically from every measured yolo_labels entry in
