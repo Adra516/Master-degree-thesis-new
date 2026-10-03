@@ -24,6 +24,7 @@ if _YOLO3D_DIR not in sys.path:
 
 from bbox3d_utils import BBox3DEstimator, DEFAULT_DIMS    # DEFAULT_DIMS, _backproject_point, _estimate_orientation
 from detection_model import ObjectDetector  # YOLOv11 + multi-object tracking
+from ultralytics import YOLO  # only to swap in an explicit checkpoint — see __init__
 
 
 class _TunedBBox3DEstimator(BBox3DEstimator):
@@ -118,8 +119,23 @@ class YoloDetectionNode:
         # ObjectDetector (chdir so YOLO finds yolo11s.pt in YOLO3D folder)
         _cwd = os.getcwd()
         os.chdir(_YOLO3D_DIR)
-        self.detector = ObjectDetector(model_size='small', conf_thres=self.conf_thresh,
-                                      weights_path=(yolo_model_path or None))
+        self.detector = ObjectDetector(model_size='small', conf_thres=self.conf_thresh)
+        if yolo_model_path:
+            # Load an explicit checkpoint (e.g. a fine-tuned model) in place of
+            # the stock one ObjectDetector just loaded, WITHOUT modifying
+            # detection_model.py itself — that file is third-party (YOLO3D,
+            # downloaded from its own creator), kept unmodified on request.
+            # ObjectDetector has no constructor hook for this, so this swaps
+            # its public .model after construction and reapplies the same
+            # overrides its own __init__ would have set for a stock load
+            # (conf/iou/agnostic_nms/max_det — see that file for the originals).
+            self.detector.model = YOLO(yolo_model_path)
+            self.detector.model.overrides['conf'] = self.conf_thresh
+            self.detector.model.overrides['iou'] = 0.45
+            self.detector.model.overrides['agnostic_nms'] = False
+            self.detector.model.overrides['max_det'] = 1000
+            rospy.loginfo("[yolo3d] Loaded explicit checkpoint: %s (classes: %s)",
+                          yolo_model_path, list(self.detector.model.names.values()))
         os.chdir(_cwd)
 
         self.K = None   # filled from camera_info
