@@ -14,7 +14,7 @@ from geometry_msgs.msg import PointStamped
 # devel/lib/ wrapper, so __file__'s own directory must be added explicitly
 # for the flat sibling import below (resolver.py) to resolve.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from resolver import ObjectCatalog
+from resolver import ObjectCatalog, normalize
 
 # YOLO3D utilities — set up before importing
 _YOLO3D_DIR = os.path.abspath(
@@ -65,6 +65,11 @@ class YoloDetectionNode:
     def __init__(self):
         self.robot_name = rospy.get_param("~robot_name",    "locobot")
         self.conf_thresh = float(rospy.get_param("~conf_threshold", 0.10))
+        # An explicit checkpoint (e.g. a fine-tuned model) overrides the stock
+        # COCO-pretrained one entirely — see ObjectDetector(weights_path=...).
+        # Previously declared in vision_nodes.launch but never actually read
+        # here, so it had no effect; now wired through.
+        yolo_model_path = rospy.get_param("~yolo_model", "")
         self.process_rate = float(rospy.get_param("~process_rate", 2.0))
         target_object = rospy.get_param("~target_object", "bottle")
 
@@ -113,7 +118,8 @@ class YoloDetectionNode:
         # ObjectDetector (chdir so YOLO finds yolo11s.pt in YOLO3D folder)
         _cwd = os.getcwd()
         os.chdir(_YOLO3D_DIR)
-        self.detector = ObjectDetector(model_size='small', conf_thres=self.conf_thresh)
+        self.detector = ObjectDetector(model_size='small', conf_thres=self.conf_thresh,
+                                      weights_path=(yolo_model_path or None))
         os.chdir(_cwd)
 
         self.K = None   # filled from camera_info
@@ -180,7 +186,14 @@ class YoloDetectionNode:
         active_ids = []   # object_ids seen this frame, to drop stale Kalman tracks below
 
         for bbox, score, cls_id, obj_id in raw_dets:
-            class_name = self.detector.model.names[cls_id].lower()
+            # normalize(), not just .lower(): config/objects.yaml's yolo_labels go
+            # through resolver.normalize() (which also turns "_"/"-" into a space),
+            # so a model whose own trained class names contain underscores (this
+            # project's fine-tune: "tea_box", "can_coke") must be normalized the
+            # SAME way here, or every detection of them silently fails the
+            # target_classes filter below and never gets published at all — found
+            # live deploying that fine-tune (detections_3d came back "[]").
+            class_name = normalize(self.detector.model.names[cls_id])
             if (self.target_classes
                     and class_name not in self.target_classes
                     and class_name not in SCENE_CLASSES):

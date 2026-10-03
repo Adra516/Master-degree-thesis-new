@@ -43,11 +43,13 @@ def test_the_logged_phantom_person_is_capped():
 
 def test_catalogued_obstacle_takes_its_catalogue_size_and_the_table_keeps_its_own():
     """YOLO reads the 45 mm can as 55 mm; as a neighbour's collision box it is
-    sized from the catalogue instead."""
+    sized from the catalogue instead. Label is "can_coke" (the fine-tuned
+    model's own class, since the 2026-10-03 catalogue switch) rather than the
+    old "cell phone" COCO alias — same object, current reality."""
     m = _model()
-    m.update([_det("cell phone", (0.45, 0.20, 0.30), (0.096, 0.055, 0.055)),
+    m.update([_det("can_coke", (0.45, 0.20, 0.30), (0.096, 0.055, 0.055)),
               _det("dining table", (0.66, 0.0, 0.25), (0.02, 0.40, 0.80))], 0.0, None)
-    can = _box_for(m, "cell phone")
+    can = _box_for(m, "can_coke")
     assert math.isclose(can["sx"], 0.045 + 2 * OBSTACLE_PAD), can
     tbl = next(d for d in m.latest if d["class_name"] == "dining table")
     assert tbl["dims_hwl"] == [0.02, 0.40, 0.80], tbl
@@ -70,10 +72,10 @@ def test_surface_label_is_not_a_generic_obstacle():
     obstacles() at all, whatever its reported size."""
     m = _model()
     m.update([_det("dining table", (0.562, 0.0, 0.336), (0.211, 0.511, 0.511)),
-              _det("cell phone", (0.45, 0.20, 0.30), (0.096, 0.055, 0.055))], 0.0, None)
+              _det("can_coke", (0.45, 0.20, 0.30), (0.096, 0.055, 0.055))], 0.0, None)
     names = [b["name"] for b in m.obstacles()]
     assert not any("dining table" in n or "table" in n for n in names), names
-    assert any("cell phone" in n for n in names), names   # real obstacles still appear
+    assert any("can_coke" in n for n in names), names   # real obstacles still appear
 
 
 if __name__ == "__main__":

@@ -20,38 +20,52 @@
 #                whichever frame arrived first.
 #   role         "surface" = not something to pick; feeds the table model.
 #
-# Units: metres. Verified against the CURRENT _ALIAS_MAP in
-# yolo_detection_node.py before writing (same 4 objects, same measured labels).
+# Units: metres.
+#
+# 2026-10-03: yolo_labels for bottle/tea_box/can_coke/ball switched from
+# measured COCO aliases to the objects' own real names. This project now runs
+# a model fine-tuned on these 4 objects directly (vision_nodes.launch's
+# yolo_model), which reports them as themselves instead of guessing the
+# nearest COCO class it half-recognises them as. table's entry is UNCHANGED
+# (still "dining table", a COCO class) because the fine-tune was NOT trained
+# on the table — it is a 4-class-only model and will never report this label
+# again; left as-is because the fallback this starves (world_table.py's
+# TableEstimate, used only as a seed/for a MoveIt obstacle box and scene-
+# summary text) already has a tested "never seen the table" path, and the
+# actual grasp-height correction is unaffected — footprint.table_height()
+# independently re-measures the table surface from the depth image on every
+# pick, using this only as its initial guess, not as the final answer.
 version: 1
 
 objects:
   bottle:
     names: [bottle, beer bottle, beer]
-    yolo_labels: [bottle, vase]
+    yolo_labels: [bottle]
     size: {x: 0.062, y: 0.062, z: 0.23}
 
   tea_box:
     names: [tea box, teabox, tea]
-    yolo_labels: [remote]
+    yolo_labels: [tea_box]
     size: {x: 0.045, y: 0.045, z: 0.09}
 
   can_coke:
     names: [coke can, cancoke, coke, can, soda can]
-    yolo_labels: [cell phone]
+    yolo_labels: [can_coke]
     # Measured from the model's meshes at its 0.63 scale: 44.7 mm diameter,
     # 81.6 mm tall (not the 55 x 96 mm the model.sdf comment states).
     size: {x: 0.045, y: 0.045, z: 0.082}
 
   ball:
     # Reshaped into an upright capsule (models/ball_capsule) so the jaws can
-    # take it from the side; the YOLO label is still the old sphere's and has
-    # not been re-checked on the new shape.
+    # take it from the side; the fine-tuned model was trained on frames of
+    # this capsule shape directly (collect_training_data.py), unlike the old
+    # COCO alias which was never re-checked on the new shape.
     names: [ball, sports ball]
-    yolo_labels: [sports ball]
+    yolo_labels: [ball]
     size: {x: 0.045, y: 0.045, z: 0.12}
 
   table:
     role: surface
     names: [table, dining table]
-    yolo_labels: [dining table]
+    yolo_labels: [dining table]   # never reported by the fine-tuned model — see header
     size: {x: 0.40, y: 0.80, z: 0.25}

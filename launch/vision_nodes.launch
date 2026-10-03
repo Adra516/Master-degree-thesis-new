@@ -12,7 +12,21 @@
   <arg name="grasp_min_interval_s" default="5.0"/>
 
   <!-- YOLO args -->
-  <arg name="yolo_model"          default="/home/adrana/th_ws/YOLO-3D/yolo11n.pt"/>
+  <!-- The 2026-10-02 fine-tune on this project's own 4 catalogued objects
+       (591 auto-labeled Gazebo frames; mAP50 0.995, mAP50-95 0.986 on a held-
+       out split), replacing the stock COCO-pretrained model's class-confusion
+       (can/tea_box both "cell phone", the capsule getting no class at all).
+       This param used to be declared but never actually read by
+       yolo_detection_node.py (and pointed at a directory, YOLO-3D, that
+       doesn't exist — "YOLO3D", no hyphen, is the real one); both fixed
+       together. See docs/ or the yolo-finetune-dataset memory for how this
+       was trained, and its one real trade-off: this model knows ONLY these
+       4 classes, so it can no longer detect "dining table"/"person"/any
+       uncatalogued object at all (the stock model at least mislabeled them
+       as SOME COCO class; this one sees nothing). Table-height accuracy for
+       grasping is unaffected (footprint.table_height() re-measures it from
+       the depth image directly, this YOLO label was only ever its seed). -->
+  <arg name="yolo_model"          default="/home/adrana/th_ws/YOLO3D/yolo11s_locobot_finetune1.pt"/>
   <arg name="yolo_process_rate"   default="5.0"/>
   <!-- Empty by default: yolo_detection_node then derives its class filter
        automatically from every measured yolo_labels entry in
