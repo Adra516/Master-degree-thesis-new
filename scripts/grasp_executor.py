@@ -77,6 +77,21 @@ RELEASE_STEPS = 6
 # Default place height above the grasp height (m) — see place().
 PLACE_CLEARANCE = 0.005
 
+# A close command that moves the fingers less than this counts as a STALL, not
+# a shallow-but-real grip on a wide object — see _do_descent's stall gate.
+# gazebo_grasp_fix welds on ANY two-roughly-opposing-direction contact within
+# 100ms (grip_count_threshold=1 @ 20Hz — see urdf/grasp_fix.urdf.xacro), with
+# no regard to commanded finger position. The jaws travel OPEN around the
+# object during descent (this module's own docstring already documents one
+# incident of this attaching with no close command at all, dragging the
+# object 254mm); a near-square object's corner can graze a pad during that
+# approach and weld before the deliberate squeeze ever acts, after which
+# further closing just fights an already-rigid joint. Every legitimate
+# shallow grip measured live moved >= 5mm; the one confirmed stall case
+# (object welded mid-approach, held through the whole cycle, never slipped)
+# moved 1mm.
+MIN_CLOSE_TRAVEL_MM = 3.0
+
 
 def live_param(name, default):
     return float(rospy.get_param(f"~{name}", default))
@@ -160,9 +175,24 @@ class GraspExecutor:
         self.scene.add_target(target_box)
         rospy.sleep(0.30)   # let MoveIt register the collision objects
 
-        # Rotate the waist to face the target before raising to GRASP_READY_POSE,
-        # so the Cartesian planner starts already pointing at the target.
-        waist = float(np.clip(math.atan2(y, x), -1.5, 1.5))
+        # Rotate the waist to the PLAN's grasp orientation — NOT bare bearing —
+        # before raising to GRASP_READY_POSE. GRASP_READY_POSE's other 5
+        # joints are fixed, so the waist angle alone sets the EE's yaw in
+        # base_link for the whole approach, and _wp_for carries that SAME
+        # orientation through unchanged into the descent leg: this is the
+        # ONLY place the gripper's actual closing axis gets set. It was
+        # bearing-only (atan2(y,x)) until now — the measured/depth-planner
+        # yaw in grasp_orientation only ever shaped the STANDOFF's position
+        # (pregrasp_pose's approach_vector uses it), never the commanded
+        # rotation, so a box resting at a genuine angle to the robot's
+        # bearing was still being closed on bearing-aligned jaws, not
+        # face-aligned ones — exactly the thin-margin graze risk that's been
+        # tripping the stall gate. For a round object grasp_orientation's yaw
+        # already equals bearing (grasp_pose() falls back to it when
+        # orientation=None), so this is a no-op for those.
+        gq = plan["grasp_orientation"]
+        grasp_yaw = 2.0 * math.atan2(gq[2], gq[3])
+        waist = float(np.clip(grasp_yaw, -1.5, 1.5))
         rospy.loginfo("[arm] Waist to target: %.3f rad (%.1f°)", waist, math.degrees(waist))
         ready = [waist] + list(GRASP_READY_POSE[1:])
         self.arm.send_joints(ready, move_time=3.5)
@@ -851,6 +881,31 @@ class GraspExecutor:
                       else "a squeeze past the contact")
         self.gripper.send(plan["gripper_close"], move_time=2.0)
         rospy.sleep(0.6)   # let the grip settle and grasp-fix attach
+
+        # STALL GATE: the fingers barely moved despite the close command —
+        # the signature of gazebo_grasp_fix having already welded the object
+        # to the palm (see MIN_CLOSE_TRAVEL_MM) from an incidental graze
+        # during the open-jaw approach, before this squeeze could do
+        # anything: closing further just fights a joint that's already
+        # rigid. Treat this as a failure, not a reported success — release
+        # (cycling past grasp_fix's release_tolerance drops a weld with no
+        # close command too, same as the contact-not-verified branch above)
+        # and retreat, rather than carrying a possibly mis-oriented object
+        # through the rest of the cycle unreported.
+        travel_mm = (FINGER_OPEN - self.gripper.position) * 1000
+        if travel_mm < MIN_CLOSE_TRAVEL_MM:
+            rospy.logwarn("[arm] Gripper stalled %.1fmm from fully open (target was "
+                          "%.1fmm) — likely welded onto an incidental graze during "
+                          "the open-jaw approach, before the squeeze could act. "
+                          "Releasing and retreating rather than reporting success.",
+                          travel_mm, plan["gripper_close"] * 1000)
+            self.gripper.send(FINGER_OPEN - 0.012, move_time=0.8)
+            self.gripper.send(FINGER_OPEN, move_time=0.8)
+            self._retreat_up(x, y, retreat_z, descent_ori)
+            return False, {"phase": "descent", "verified": False,
+                           "reason": f"gripper stalled {travel_mm:.1f}mm from fully "
+                                     f"open — released and retreated",
+                           "descended": True}
 
         # Re-hold at the new pose: the grasped object shifts the load, so
         # re-command the measured joints to absorb it before lifting.

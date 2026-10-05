@@ -354,6 +354,7 @@ class WorldModelNode:
                 st.locked, st.lock_age = True, now - m.lock_t
                 st.lock_position = Point(*m.lock["position_base"])
                 st.lock_size, _ = vec_or_zero(m.lock["dims_hwl"])
+                st.lock_orientation = float(m.lock.get("orientation", 0.0))
             recent = m.recent_positions(now)
             st.recent_count = len(recent)
             if recent:
@@ -364,6 +365,7 @@ class WorldModelNode:
                 st.in_frame = True
                 st.frame_position = Point(*ft["position_base"])
                 st.frame_size, _ = vec_or_zero(ft["dims_hwl"])
+                st.frame_orientation = float(ft.get("orientation", 0.0))
                 st.frame_bbox = [float(v) for v in ft["bbox_2d"][:4]]
                 st.frame_stamp = self._frame_stamp
             st.calibrated_size, st.calibrated = vec_or_zero(m.target_calibrated_dims())
@@ -684,6 +686,11 @@ class TaskOrchestrator:
         dims = (dims_hwl_from_size(st.calibrated_size) if st.calibrated
                 else dims_hwl_from_size(st.frame_size) if st.in_frame
                 else dims_hwl_from_size(st.lock_size) if st.locked else None)
+        # Orientation has no calibrated-over-time analogue (unlike size, it
+        # isn't meaningful to average across frames taken from different
+        # angles) — same frame/lock priority as dims, one level simpler.
+        orientation = (st.frame_orientation if st.in_frame
+                      else st.lock_orientation if st.locked else None)
         grasp_axis = s.target.grasp_axis or "along_x"
         tz = s.table.surface_z
         scene_obstacles = list(self.get_scene(target_name=target_name).obstacles)
@@ -707,7 +714,7 @@ class TaskOrchestrator:
         #    retracts the arm, so the base can be corrected and it can retry once.
         # The plan is chosen once per attempt and reused for this attempt's
         # execute_grasp call below — NOT recomputed there (see _choose_plan).
-        plan_msg, tz = self._choose_plan(st, pos, dims, grasp_axis, tz)
+        plan_msg, tz = self._choose_plan(st, pos, dims, grasp_axis, tz, orientation)
         pre, failures, followed = None, 0, False
         while True:
             pre = self.execute_pregrasp(
@@ -754,7 +761,7 @@ class TaskOrchestrator:
             # not the pre-correction one the original st still holds.
             st = self._wait_in_frame(target_name,
                                      self.get_target(target_name=target_name).state)
-            plan_msg, tz = self._choose_plan(st, pos, dims, grasp_axis, tz)
+            plan_msg, tz = self._choose_plan(st, pos, dims, grasp_axis, tz, orientation)
             rospy.loginfo("[task] Re-positioned for pre-grasp retry: (%.3f, %.3f)", *pos)
         if not pre.success:
             return GetObjectResponse(
@@ -832,7 +839,7 @@ class TaskOrchestrator:
 
     # ── Grasp planning ───────────────────────────────────────────────────────
 
-    def _choose_plan(self, st, pos, dims, grasp_axis, tz):
+    def _choose_plan(self, st, pos, dims, grasp_axis, tz, orientation=None):
         """(plan, table_z): the grasp to execute — the depth-image planner's measurement of this
         specific object's real shape when it can support one, else the bbox-
         centre baseline. Never worse than the baseline — a planner that is
@@ -841,9 +848,16 @@ class TaskOrchestrator:
         not guaranteed to reproduce the point the arm already positioned
         itself relative to, and re-querying it for the descent would be both
         physically wrong and liable to trip grasp_executor's drift guard on
-        measurement noise rather than a real problem."""
+        measurement noise rather than a real problem.
+
+        orientation: the refined per-detection yaw (None when never measured),
+        used only by the baseline fallback — the depth planner measures its
+        own orientation-aware contact axis directly from real 3D geometry and
+        has no use for this 2D-image-derived estimate."""
         r = None
-        if st.in_frame:
+        if rospy.get_param("~force_baseline_plan", False):
+            rospy.loginfo("[task] ~force_baseline_plan set — skipping the depth planner")
+        elif st.in_frame:
             try:
                 r = self.plan_grasp(bbox=st.frame_bbox, stamp=st.frame_stamp,
                                     position=Point(pos[0], pos[1], 0.0),
@@ -880,7 +894,8 @@ class TaskOrchestrator:
         else:
             if r is not None:
                 rospy.loginfo("[task] Depth planner declined (%s) — using baseline", r.reason)
-            plan_msg = plan_to_msg(gg.baseline_plan(pos, dims, grasp_axis, tz))
+            plan_msg = plan_to_msg(gg.baseline_plan(pos, dims, grasp_axis, tz,
+                                                    orientation=orientation))
             source = "baseline"
 
         model = rospy.get_param("~diag_object_model",

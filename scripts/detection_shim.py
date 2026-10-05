@@ -32,6 +32,7 @@ import sys
 
 import cv2
 import numpy as np
+import rospkg
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from sensor_msgs.msg import Image
@@ -44,12 +45,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from conversions import detection_to_msg
 from locobot_geometry import estimate_grasp_orientation
 from locobot_prog.msg import DetectionArray
+from resolver import ObjectCatalog
 
 
 class DetectionShim:
 
     def __init__(self):
         ns = rospy.get_param("~robot_name", "locobot")
+        default_catalog = rospkg.RosPack().get_path("locobot_prog") + "/config/objects.yaml"
+        self.catalog = ObjectCatalog.from_yaml(rospy.get_param("~catalog", default_catalog))
         self.bridge = CvBridge()
         self.latest_frame = None
         self.latest_depth = None   # float32 metres, aligned to color frame
@@ -96,6 +100,8 @@ class DetectionShim:
                 continue
             bbox_2d = d.get("bbox_2d")
             if self.latest_frame is not None and bbox_2d and len(bbox_2d) >= 4:
+                key = self.catalog.key_for_name(d.get("class_name", ""))
+                symmetric = self.catalog.is_round(key) if key else None
                 refined = estimate_grasp_orientation(
                     self.latest_frame, bbox_2d,
                     fallback_yaw=d.get("orientation", 0.0),
@@ -103,6 +109,7 @@ class DetectionShim:
                     depth_m=d.get("depth_m"),
                     dims_hwl=d.get("dims_hwl"),
                     orientation=d.get("orientation"),
+                    symmetric=symmetric,
                 )
                 d = dict(d, orientation=refined)
             out.detections.append(detection_to_msg(d))

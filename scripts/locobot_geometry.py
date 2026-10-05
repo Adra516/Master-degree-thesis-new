@@ -22,15 +22,21 @@ def estimate_grasp_orientation(img_bgr: np.ndarray, bbox_2d: list,
                                depth_img: np.ndarray = None,
                                depth_m: float = None,
                                dims_hwl: list = None,
-                               orientation: float = None) -> float:
+                               orientation: float = None,
+                               symmetric: bool = None) -> float:
     """Estimate gripper yaw fusing depth-masked minAreaRect with bbox3d priors.
     Two fusions over the plain image-only approach:
-    1. Physical symmetry check (dims_hwl):
-       The footprint ratio max(w,l)/min(w,l) from the known class dimensions is
-       tested BEFORE any image processing.  If < 1.3 the object is symmetric
-       (bottle, vase, cup) and yaw is meaningless → return 0.0 immediately.
-       This is more reliable than measuring the contour itself, which can be
-       distorted by depth holes or partial occlusion.
+    1. Symmetry check — skip image processing when yaw cannot matter:
+       `symmetric`, when given (the caller's own catalogue lookup — see
+       config/objects.yaml's `round` field), decides this directly: a ROUND
+       cross-section (bottle, can, the ball capsule) has no meaningful yaw at
+       all. When `symmetric` is not given (an uncatalogued object), this
+       falls back to the footprint ratio max(w,l)/min(w,l) from dims_hwl: a
+       LOW ratio only proves the footprint is square, not that the object is
+       round — a square box (tea_box, 45x45mm) has a real yaw that matters
+       for which corner the jaws meet, so this fallback is a weaker, strictly
+       worse signal than the catalogue and exists only when there is nothing
+       else to go on.
     2. 180° disambiguation (orientation / theta_ray from bbox3d):
        minAreaRect returns the long-axis angle but cannot tell which end is
        "forward" — both yaw and yaw±π fit the same rectangle.  The bbox3d
@@ -48,16 +54,24 @@ def estimate_grasp_orientation(img_bgr: np.ndarray, bbox_2d: list,
         depth_m:      Median depth of the object in metres (from _sample_depth).
         dims_hwl:     [height, width, length] physical dimensions from YOLO3D.
         orientation:  bbox3d global yaw estimate (theta_ray, radians).
+        symmetric:    True/False from the caller's own catalogue lookup
+                      (config/objects.yaml's `round` field) when the object is
+                      catalogued, else None to fall back to the dims-based
+                      guess below.
 
     Returns:
         yaw_rad in [-π/2, π/2].
     """
-    # ── 1. Physical symmetry check — skip image processing for round objects ──
-    if dims_hwl is not None:
+    # ── 1. Symmetry check — skip image processing for round objects ──
+    if symmetric is not None:
+        if symmetric:
+            return 0.0   # round cross-section (bottle, can, ball) -> yaw undefined
+    elif dims_hwl is not None:
         _, w, l = dims_hwl
         footprint_ratio = max(w, l) / max(min(w, l), 1e-6)
         if footprint_ratio < 1.3:
-            return 0.0   # symmetric footprint (bottle, vase, cup) → yaw undefined
+            return 0.0   # square-OR-round footprint, no catalogue to tell them
+                        # apart -> the weaker guess from objects.yaml's header
 
     x1, y1, x2, y2 = (int(v) for v in bbox_2d[:4])
     h_img, w_img   = img_bgr.shape[:2]
@@ -95,8 +109,12 @@ def estimate_grasp_orientation(img_bgr: np.ndarray, bbox_2d: list,
     if min(rw, rh) < 1.0:
         return fallback_yaw
 
-    # Image-derived symmetry guard (used when dims_hwl was not provided)
-    if max(rw, rh) / min(rw, rh) < 1.3:
+    # Image-derived symmetry guard — only when the catalogue hasn't already
+    # settled the question (symmetric is None): a KNOWN non-round object
+    # (symmetric=False, e.g. tea_box) keeps its measured yaw even if this
+    # particular view happens to look roughly square-on, same reasoning as
+    # check 1 above.
+    if symmetric is None and max(rw, rh) / min(rw, rh) < 1.3:
         return 0.0
 
     # minAreaRect returns angle in [-90, 0]; when width < height the long axis

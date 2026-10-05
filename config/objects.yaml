@@ -19,6 +19,16 @@
 #                actually matches the catalogue wins instead of racing on
 #                whichever frame arrived first.
 #   role         "surface" = not something to pick; feeds the table model.
+#   round        true = the object's cross-section is a circle (bottle, can,
+#                the ball capsule): orientation is genuinely meaningless, skip
+#                estimating it. Deliberately NOT inferred from the footprint
+#                being square (width == length) — a square footprint and a
+#                round one are different shapes. tea_box is square (45x45mm)
+#                but NOT round: it has 4 real, flat faces, and grasping it at
+#                the wrong yaw catches a corner instead of a face. Confirmed
+#                live (2026-10-05, ground-truth pose trace): a corner-caught
+#                tea_box pick toppled it 45-67 degrees in roll/pitch while
+#                being lifted. Omitted/false = not round (the default).
 #
 # Units: metres.
 #
@@ -42,6 +52,7 @@ objects:
   bottle:
     names: [bottle, beer bottle, beer]
     yolo_labels: [bottle]
+    round: true
     size: {x: 0.062, y: 0.062, z: 0.23}
 
   tea_box:
@@ -52,6 +63,7 @@ objects:
   can_coke:
     names: [coke can, cancoke, coke, can, soda can]
     yolo_labels: [can_coke]
+    round: true
     # Measured from the model's meshes at its 0.63 scale: 44.7 mm diameter,
     # 81.6 mm tall (not the 55 x 96 mm the model.sdf comment states).
     size: {x: 0.045, y: 0.045, z: 0.082}
@@ -63,6 +75,7 @@ objects:
     # COCO alias which was never re-checked on the new shape.
     names: [ball, sports ball]
     yolo_labels: [ball]
+    round: true
     size: {x: 0.045, y: 0.045, z: 0.12}
 
   table:

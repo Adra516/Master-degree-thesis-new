@@ -70,6 +70,11 @@ class ObjectCatalog:
         s = self.objects[key].get("size")
         return (float(s["x"]), float(s["y"]), float(s["z"])) if s else None
 
+    def is_round(self, key):
+        """True when this object's cross-section is a circle (see objects.yaml's
+        own header: deliberately NOT inferred from a square footprint)."""
+        return bool(self.objects[key].get("round", False))
+
     def surface_labels(self):
         """Labels of objects with role: surface (the table)."""
         out = set()

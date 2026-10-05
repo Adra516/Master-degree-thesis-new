@@ -325,14 +325,64 @@ def descent_height(commanded_z, object_z, tol_mm=REAIM_Z_TOL_MM, max_mm=REAIM_Z_
     return float(commanded_z), "refused", dz
 
 
-def grasp_pose(target_xy, dims_hwl, table_z):
-    """EE horizontal grasp pose (position [x,y,z], quaternion [x,y,z,w]):
-    gripper level, +x pointing at the object, descends onto the object body.
+def _nearest_square_equivalent(yaw, bearing):
+    """For a SQUARE footprint, `yaw` and `yaw + k*90deg` (any integer k) are
+    the same physical grasp — the jaws meet the same pair of opposite faces
+    either way. Pick whichever representative is closest to `bearing` (the
+    direction the robot is actually standing in), not whichever one
+    minAreaRect happened to return.
 
-    target_xy : (x, y) of the object in base_link.
+    This exists because a square has an ambiguity estimate_grasp_orientation's
+    own 180-degree disambiguation (against the camera ray) does not resolve:
+    that logic only picks between a candidate and its opposite, never between
+    a candidate and the SAME box rotated 90 degrees, which looks identical.
+    Confirmed live (2026-10-05): the measured yaw landed ~90deg from bearing
+    on tea_box in 2 of 2 trials after the orientation fix first shipped
+    (-85deg vs a -1.2deg bearing; 90deg vs a 0.85deg bearing) — minAreaRect's
+    choice between the two is effectively arbitrary, and backing the standoff
+    away along the far one sends it ~100mm to the SIDE of the object instead
+    of in front of it, which the approach/standoff machinery (built assuming
+    the gripper roughly faces the same way the robot does) cannot reach."""
+    best, best_diff = yaw, abs(((yaw - bearing + math.pi) % (2 * math.pi)) - math.pi)
+    for k in (-2, -1, 1, 2):
+        cand = yaw + k * math.pi / 2.0
+        diff = abs(((cand - bearing + math.pi) % (2 * math.pi)) - math.pi)
+        if diff < best_diff:
+            best, best_diff = cand, diff
+    return best
+
+
+def grasp_pose(target_xy, dims_hwl, table_z, orientation=None):
+    """EE horizontal grasp pose (position [x,y,z], quaternion [x,y,z,w]):
+    gripper level, descends onto the object body.
+
+    target_xy   : (x, y) of the object in base_link.
+    orientation : the object's own measured yaw (radians, base_link), when
+        known — the gripper then closes parallel to its real faces instead of
+        just facing its centre. Without this, a non-round object (a box) is
+        closed on at whatever angle the robot happens to be standing at,
+        which only coincidentally lines up with a flat face; a few degrees of
+        mismatch is enough for the jaws to meet a CORNER instead, and corner
+        contact is exactly what toppled tea_box live (confirmed via a
+        ground-truth pose trace, 2026-10-05: 45-67deg of roll/pitch while
+        being lifted, after a bearing-only grasp). None (round object, or
+        orientation never measured) keeps the original behaviour, which is
+        correct for a round object — any angle meets the same curved surface.
+        For a near-SQUARE footprint, snapped to whichever 90-degree-equivalent
+        representation stays closest to the bearing (see
+        _nearest_square_equivalent) — an elongated box only has the 180-degree
+        ambiguity already resolved upstream, so this only applies near 1:1.
     """
     x, y = float(target_xy[0]), float(target_xy[1])
-    yaw = math.atan2(y, x)                      # face the object
+    bearing = math.atan2(y, x)
+    if orientation is None:
+        yaw = bearing
+    else:
+        yaw = float(orientation)
+        if dims_hwl is not None:
+            _, w, l = dims_hwl
+            if max(w, l) / max(min(w, l), 1e-6) < 1.3:
+                yaw = _nearest_square_equivalent(yaw, bearing)
     z = _horiz_grasp_z(table_z, dims_hwl)
     quat = tft.quaternion_from_euler(0.0, 0.0, yaw)
     return [x, y, z], list(quat)
@@ -507,10 +557,11 @@ def table_box(table_z, width, depth, near_x, target_x, thickness=0.05, padding=0
 # (e.g. from real depth data) may build and pass a different one instead — the
 # arm executes whatever GraspPlan it is given and derives no geometry itself.
 
-def baseline_plan(target_xy, dims_hwl, grasp_axis, table_z):
+def baseline_plan(target_xy, dims_hwl, grasp_axis, table_z, orientation=None):
     """The grasp the pipeline has always executed, as one plan: level gripper
-    facing the object's centre, grip height from grasp_height_above_table,
-    gripper widths from the measured bbox.
+    facing the object's centre (or aligned to its real faces, when
+    `orientation` is given — see grasp_pose), grip height from
+    grasp_height_above_table, gripper widths from the measured bbox.
 
     Returns a plain dict (the fields of locobot_prog/GraspPlan). When no side
     grasp exists the plan is returned with valid=False and the reason, rather
@@ -518,7 +569,9 @@ def baseline_plan(target_xy, dims_hwl, grasp_axis, table_z):
     """
     size = dims_hwl if dims_hwl is not None else UNKNOWN_OBJECT_DIMS
     plan = {
-        "valid": True, "reason": "baseline: bbox centre, bearing yaw",
+        "valid": True,
+        "reason": ("baseline: bbox centre, measured yaw" if orientation is not None
+                  else "baseline: bbox centre, bearing yaw"),
         "standoff_offset": PREGRASP_STANDOFF_OFFSET,
         "standoff_offset_min": min_standoff_offset(dims_hwl),
         "full_close": is_tapered(dims_hwl, grasp_axis),
@@ -539,7 +592,7 @@ def baseline_plan(target_xy, dims_hwl, grasp_axis, table_z):
                         gripper_open=FINGER_OPEN, gripper_close=FINGER_CLOSE)
             return plan
     try:
-        xyz, quat = grasp_pose(target_xy, dims_hwl, table_z)
+        xyz, quat = grasp_pose(target_xy, dims_hwl, table_z, orientation=orientation)
     except ObjectTooShortForSideGrasp as e:
         plan.update(valid=False, reason=f"Object too short for a side grasp: {e}",
                     grasp_point=[float(target_xy[0]), float(target_xy[1]), table_z],
