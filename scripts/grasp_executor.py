@@ -91,6 +91,15 @@ PLACE_CLEARANCE = 0.005
 # (object welded mid-approach, held through the whole cycle, never slipped)
 # moved 1mm.
 MIN_CLOSE_TRAVEL_MM = 3.0
+# How long to keep watching the fingers, arm still, AFTER the lift before
+# reporting the object held (live-tunable `hold_verify_s`; 0 disables). Measured
+# 2026-10-13 over 10 fresh bottle picks: of the grasps that lifted cleanly, the
+# grip let go 3.9 s, 10.6 s and 18.8 s later — each beginning with both fingers
+# snapping inward 10+ mm in 0.2 s while the arm sat still. Reporting success at
+# the instant the lift ends (the old behaviour) was true for all of them and
+# false by the time anything used it. This window catches the early ones; the
+# 19 s one needs a longer window than is worth adding to every pick.
+HOLD_VERIFY_S = 8.0
 
 
 def live_param(name, default):
@@ -115,6 +124,10 @@ class GraspExecutor:
         self._last_grasp_z = None         # EE height of the last grasp (for place)
         self._last_grasp_xy = None        # where the jaws last closed (for place)
         self.last_close_target = None     # last commanded per-finger close (m)
+        # () -> (x, y, z) of the odometry-held object reference in base_link NOW, or
+        # None. Set by arm_node (it is a service call to the world model); None keeps
+        # the aim taken at the start of the descent.
+        self.object_ref_fn = None
         # pregrasp() leaves the arm holding at the standoff and stashes what
         # grasp() needs here. None = no verified pre-grasp: grasp() must refuse.
         self._pending_grasp = None
@@ -347,6 +360,39 @@ class GraspExecutor:
 
         return True, {"placed_at": [round(x, 3), round(y, 3)]}
 
+    def shift(self, dx, dy, dz, move_time=1.5, unwind=True):
+        """Move the EE by a Cartesian offset from wherever it currently is,
+        holding orientation fixed. Collision-aware OFF — same reasoning as
+        _retreat_up: the caller uses this to move AWAY from something it
+        already knows is nearby, so a collision check could only refuse the
+        one move meant to prevent one.
+
+        Used by inspect_object to pull a held object horizontally clear of a
+        nearby catalogued obstacle before rotating it — the held object
+        itself never moves relative to the gripper (this is a plain Cartesian
+        move, not a regrasp), only where the whole assembly sits in the
+        world."""
+        # With the jaws open (nothing held) a flipped wrist is unwound first, same as
+        # before every grasp leg: from the far branch the Cartesian path plans 0%
+        # (measured: "Shift path only 0%"). Never while holding: the unwind swings
+        # forearm_roll by ~pi, which would swing a held object with it.
+        if unwind and self.gripper.position >= FINGER_OPEN - 0.003:
+            self._unwind_wrist_if_flipped()
+        pose = self.move_group.get_current_pose().pose
+        x, y, z = pose.position.x + dx, pose.position.y + dy, pose.position.z + dz
+        ori = pose.orientation
+        plan, frac = self.move_group.compute_cartesian_path(
+            [self._wp_for(ori)(x, y, z)], 0.01, False)
+        if frac > 0.5:
+            plan = self.move_group.retime_trajectory(
+                self.robot.get_current_state(), plan,
+                velocity_scaling_factor=0.15, acceleration_scaling_factor=0.15)
+            dur = self.arm.publish_trajectory(plan)
+            rospy.sleep(dur + 0.4)
+            return True, {"x": x, "y": y, "z": z}
+        rospy.logwarn("[arm] Shift path only %.0f%% — holding position", frac * 100)
+        return False, {"reason": f"shift path only {frac * 100:.0f}% coverage", "x": x, "y": y, "z": z}
+
     # ── Internals ────────────────────────────────────────────────────────────
 
     def _outcome(self, ok, gw_before, info):
@@ -354,15 +400,48 @@ class GraspExecutor:
 
         Keeps the long-standing rule that a MEASURABLY CLOSED gripper counts as
         success even when planning reported a failure — the physical evidence
-        outranks the planner's opinion.
+        outranks the planner's opinion. The same evidence now also works the
+        other way: a sequence that ran to completion (`ok`) but left the fingers
+        open, past their limit, or sitting at their commanded close target has
+        gripped nothing, and is reported as the failure it is (see
+        gg.grip_verdict for the measured cases this exists for).
         """
+        info = dict(info or {})
         gw_m = self.gripper.position
+        # "Partially closed" only counts as a grasp when WE closed it. Measured
+        # 2026-10-14: the contact gate refused to close (jaws 24 mm off along the
+        # approach) after the jaws had already grazed the bottle and welded it, the
+        # fingers sat at 29.7 mm, and this rule reported success with the bottle
+        # hanging tilted off the gripper. No close was ever commanded.
+        closed_by_us = "close_target_m" in info
         gripper_closed_on_object = (
-            gw_before > FINGER_OPEN - 0.005          # was open before
+            closed_by_us
+            and gw_before > FINGER_OPEN - 0.005      # was open before
             and FINGER_CLOSE + 0.008 < gw_m          # now partially closed
             and gw_m < FINGER_OPEN - 0.005           # but not fully open (held something)
         )
-        success = ok or gripper_closed_on_object
+        held, why = gg.grip_verdict(gw_m, info.get("close_target_m"), FINGER_OPEN,
+                                      right_m=self.gripper.right_position)
+        if not held and not live_param("grip_verdict_enforce", True):
+            # Observe-only (rosparam grip_verdict_enforce=false): for experiments that
+            # change what the fingers mean (e.g. disable_collisions_on_attach lets them
+            # close through the object), where acting on the verdict would only measure
+            # the check itself.
+            rospy.logwarn("[arm] grip verdict says empty (%s) — NOT enforced "
+                          "(grip_verdict_enforce=false)", why)
+            held = True
+        sequence_ran = (ok and info.get("verified", True)) or gripper_closed_on_object
+        grip_lost = bool(info.get("grip_lost"))      # already released by _do_descent
+        if sequence_ran and not held and not grip_lost:
+            info["reason"] = f"nothing in the gripper: {why}"
+            rospy.logwarn("[arm] Grasp sequence completed but the gripper is empty: %s — "
+                          "opening the jaws and reporting failure", why)
+            # A weld can still be holding the object with empty pads; cycle the
+            # fingers past release_tolerance so it cannot ride along (same pattern
+            # as the stall gate).
+            self.gripper.send(FINGER_OPEN - 0.012, move_time=0.8)
+            self.gripper.send(FINGER_OPEN, move_time=0.8)
+        success = sequence_ran and held and not grip_lost
         self.scene.clear()
         self._pending_grasp = None
         if not success:
@@ -405,6 +484,15 @@ class GraspExecutor:
         p.orientation = ori
         frac = 0.0
         for attempt in (1, 2):
+            # Same reasoning as _do_descent's own call to this (see its comment):
+            # cheapest safe place to catch a wrist that's drifted onto the far
+            # branch before it can carry that into THIS leg. Never applied here
+            # before — live-observed 2026-10-07: repeated ~140mm pre-grasp
+            # misses where the measured EE stayed pinned at GRASP_READY_POSE's
+            # own FK position regardless of the commanded standoff, i.e. the
+            # arm never moved at all — consistent with compute_cartesian_path
+            # seeding from a flipped current state and finding ~0% coverage.
+            self._unwind_wrist_if_flipped()
             plan, frac = self.move_group.compute_cartesian_path([p], 0.005, True)
             if frac >= 0.80:
                 plan = self.move_group.retime_trajectory(
@@ -717,6 +805,10 @@ class GraspExecutor:
         # refusing; only a larger disagreement stops here. Gate 2b below still
         # checks the real finger positions before the jaws close.
         miss_tol = live_param("contact_miss_tol_mm", CONTACT_MISS_TOL_MM)
+        # The reference as it is when the aim is taken: later reads are compared with
+        # THIS, so the aim and the gate can follow the object through the 6-10 s of
+        # unwind, leg and settle-holds that separate them (see gg.follow_reference).
+        ref0 = self._reproject()
         if obj_base is not None:
             (x, y), verdict, drift_mm = gg.descent_aim(
                 (x, y), (obj_base[0], obj_base[1]),
@@ -787,12 +879,19 @@ class GraspExecutor:
         # verified to within PREGRASP_POS_TOL_MM, is only the standoff offset
         # long, and grasp_z is floor-clamped well above the table.
         cart_plan, fraction = None, 0.0
+        aim0 = (x, y, grasp_z)     # as aimed at `ref0`; every attempt re-follows from it
         for attempt in (1, 2):
             # Before every attempt (including after a re-seat below): the arm is
             # confidently at a known, just-verified pose here, so this is the
             # cheapest safe place to catch a wrist that's drifted onto the far
             # branch before it can carry that into the leg that's about to run.
             self._unwind_wrist_if_flipped()
+            # The unwind just spent 2-3 s with the base free to creep; re-read the
+            # reference so the leg is computed to where the object IS now.
+            x, y, grasp_z = self._follow(aim0, ref0, "straight-in leg")
+            retreat_z = grasp_z + 0.15
+            self._last_grasp_xy = (x, y)
+            self._last_grasp_z = grasp_z
             legs = [_wp(x, y, grasp_z)]
             cart_plan, fraction = self.move_group.compute_cartesian_path(
                 legs, 0.005, False)
@@ -846,8 +945,34 @@ class GraspExecutor:
         # the object is actually between them BEFORE closing — the only moment
         # the straddle question is meaningful, and closing on a known off-centre
         # object is the failure that shoves the target across the table.
-        contact = self.diag.contact(x, y, grasp_z, obj_base)
-        c_ok, c_reason = gg.contact_verdict(contact, miss_tol)
+        obj_gate = obj_base
+        if obj_base is not None:
+            obj_gate = list(self._follow(tuple(obj_base[:3]), ref0, "contact gate"))
+        contact = self.diag.contact(x, y, grasp_z, obj_gate)
+        room_frac = live_param("contact_room_fraction", gg.CONTACT_ROOM_FRACTION)
+        c_ok, c_reason = gg.contact_verdict(
+            contact, miss_tol,
+            width_mm=gg.planned_width_mm(plan["gripper_close"], plan["full_close"]),
+            room_fraction=room_frac)
+
+        width_mm = gg.planned_width_mm(plan["gripper_close"], plan["full_close"])
+        shift_xy = gg.centring_shift(contact, miss_tol, width_mm, room_frac) if not c_ok else None
+        if shift_xy is not None:
+            # Off-centre but still clear of both pads (measured 2026-10-14: a 44 mm tea
+            # box arrived 4.7 mm off in 5 mm of room and was refused although the arm
+            # was where it should be). Slide the OPEN jaws sideways onto the centre —
+            # the move takes the near pad AWAY from the object — then judge again.
+            rospy.logwarn("[arm] Object %+.1f mm off the jaw centre — centring the open jaws "
+                          "(%+.1f, %+.1f) mm before closing", contact["along_jaw_mm"],
+                          shift_xy[0] * 1000, shift_xy[1] * 1000)
+            moved, _ = self.shift(shift_xy[0], shift_xy[1], 0.0, move_time=1.0, unwind=False)
+            self.arm.hold(0.4)
+            if moved:
+                x, y = x + shift_xy[0], y + shift_xy[1]
+                self._last_grasp_xy = (x, y)
+                contact = self.diag.contact(x, y, grasp_z, obj_gate)
+                c_ok, c_reason = gg.contact_verdict(contact, miss_tol, width_mm=width_mm,
+                                                    room_fraction=room_frac)
         info = {"phase": "descent", "verified": bool(c_ok), "reason": c_reason,
                 "descended": True}
         if contact:
@@ -875,6 +1000,7 @@ class GraspExecutor:
         # remembered: "held" is then a comparison against what was commanded
         # (fingers stop SHORT of it on an object, reach it on air).
         self.last_close_target = plan["gripper_close"]
+        info["close_target_m"] = plan["gripper_close"]   # _outcome judges "held" against it
         rospy.loginfo("[arm] Gripper close target=%.1fmm (%s)",
                       plan["gripper_close"] * 1000,
                       "unmeasured width -> full close" if plan["full_close"]
@@ -892,7 +1018,10 @@ class GraspExecutor:
         # close command too, same as the contact-not-verified branch above)
         # and retreat, rather than carrying a possibly mis-oriented object
         # through the rest of the cycle unreported.
-        travel_mm = (FINGER_OPEN - self.gripper.position) * 1000
+        # Mean travel of BOTH fingers: an off-centre object stops the near finger after
+        # 2-3 mm while the far one travels 8 (measured on the can, 2026-10-14), and the
+        # left-only reading called that a graze-weld stall and released a good grasp.
+        travel_mm = (FINGER_OPEN - (self.gripper.position + self.gripper.right_position) / 2.0) * 1000
         if travel_mm < MIN_CLOSE_TRAVEL_MM:
             rospy.logwarn("[arm] Gripper stalled %.1fmm from fully open (target was "
                           "%.1fmm) — likely welded onto an incidental graze during "
@@ -925,5 +1054,71 @@ class GraspExecutor:
         self._retreat_up(x, y, retreat_z, descent_ori)
         self.arm.hold(1.2)
 
+        # Keep watching the fingers while the arm sits still: the lift itself is not
+        # the end of the test (see HOLD_VERIFY_S). A grip that lets go here is a
+        # FAILURE the caller must hear about, not a success that quietly isn't.
+        lost = self._watch_grip(plan["gripper_close"])
+        if lost:
+            rospy.logwarn("[arm] Grip LOST after the lift: %s — opening the jaws and "
+                          "reporting failure", lost)
+            # Same pattern as the other release paths in this method: cycling the
+            # fingers past grasp_fix's release_tolerance drops a weld that may still
+            # be holding the object with empty pads, so it cannot ride along.
+            self.gripper.send(FINGER_OPEN - 0.012, move_time=0.8)
+            self.gripper.send(FINGER_OPEN, move_time=0.8)
+            self._pending_grasp = None
+            info.update({"grip_lost": True, "reason": f"the object came out of the grip: {lost}"})
+            return False, info
+
         self._pending_grasp = None   # consumed
         return True, info
+
+    def _reproject(self):
+        """Where the odometry-held object reference is now, base_link (x, y, z), or None."""
+        fn = self.object_ref_fn
+        if fn is None:
+            return None
+        try:
+            return fn()
+        except Exception as e:          # a measurement must never break a grasp
+            rospy.logwarn("[arm] could not re-read the object reference: %s", e)
+            return None
+
+    def _follow(self, aim_xyz, ref0, what):
+        """`aim_xyz`, carried along with the object since `ref0` was read."""
+        if ref0 is None:
+            return tuple(aim_xyz)
+        aim, verdict, (dxy, dz) = gg.follow_reference(
+            aim_xyz, ref0, self._reproject(),
+            tol_xy_mm=live_param("follow_xy_tol_mm", 2.0),
+            tol_z_mm=live_param("follow_z_tol_mm", 3.0))
+        if verdict == "followed":
+            rospy.logwarn("[arm] The object has moved %.0fmm sideways / %+.0fmm in height "
+                          "relative to the base since the aim was taken — following it for "
+                          "the %s", dxy, dz, what)
+        elif verdict == "refused":
+            rospy.logwarn("[arm] The object reference has moved %.0fmm / %+.0fmm since the "
+                          "aim was taken — too much to trust, leaving the %s aim alone",
+                          dxy, dz, what)
+        return aim
+
+    def _watch_grip(self, close_target, poll_s=0.1):
+        """Poll the fingers for `hold_verify_s` (sim seconds). Returns a reason string
+        the moment gg.grip_verdict says the object is no longer between them, else
+        None. The baseline for the "snapped inward" rule is the reading at the start
+        of the window — right after the lift and settle-hold."""
+        window = live_param("hold_verify_s", HOLD_VERIFY_S)
+        if window <= 0 or not live_param("grip_verdict_enforce", True):
+            return None
+        t0 = rospy.Time.now().to_sec()
+        baseline = self.gripper.position
+        while not rospy.is_shutdown():
+            held, why = gg.grip_verdict(self.gripper.position, close_target, FINGER_OPEN, baseline,
+                                          right_m=self.gripper.right_position)
+            elapsed = rospy.Time.now().to_sec() - t0
+            if not held:
+                return f"{why} ({elapsed:.1f}s into the hold check)"
+            if elapsed >= window:
+                return None
+            rospy.sleep(poll_s)
+        return None

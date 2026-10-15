@@ -171,6 +171,57 @@ def _check_face_grasp(c, plan, diag, side):
     assert grasp_xy_error(plan, c) < 0.004, (plan["grasp_point"], c)
 
 
+def test_tea_box_slightly_turned_closes_on_its_faces():
+    """2026-10-14 live: the 45 mm tea box sat ~8 deg off and, with the axis locked
+    (max_dev 0), measured 51 mm across its corners and was predicted to turn 8 deg
+    in the jaws. With the 40 deg deviation the orchestrator now allows, the
+    planner closes across the real faces: ~45 mm, almost no turn."""
+    c = (0.45, 0.0)
+    for yaw_deg in (8.0, 25.0, -20.0):
+        shape, corners = box(*c, 0.045, 0.045, 0.09, yaw=math.radians(yaw_deg))
+        locked, dl = plan_scene([shape], corners, c, [0.09, 0.045, 0.045], max_dev=0.0)
+        plan, diag = plan_scene([shape], corners, c, [0.09, 0.045, 0.045],
+                                max_dev=math.radians(40.0))
+        assert plan is not None, diag
+        assert diag["width"] < 0.0475, (yaw_deg, diag["width"])
+        assert diag["turn"] <= math.radians(3.0), (yaw_deg, math.degrees(diag["turn"]))
+        if locked is not None:
+            assert diag["width"] < dl["width"], (yaw_deg, diag["width"], dl["width"])
+
+
+def test_turned_box_is_closed_for_its_faces_not_its_corners():
+    """Live 2026-10-14: axis locked, box ~9 deg off, planner width 51 mm (corners) and the
+    close sized for 51: after seating the pads squeezed ~1 mm each and the box was left
+    on the table. The close target must follow the seated 45 mm."""
+    c = (0.45, 0.0)
+    for yaw_deg in (9.0, -9.0):
+        shape, corners = box(*c, 0.045, 0.045, 0.09, yaw=math.radians(yaw_deg))
+        plan, diag = plan_scene([shape], corners, c, [0.09, 0.045, 0.045], max_dev=0.0)
+        assert plan is not None, diag
+        assert diag["width"] > 0.049, diag["width"]                    # corner span, as before
+        assert diag["seated_contact"] < 0.0475, diag["seated_contact"]  # the faces
+        # per-finger squeeze past the real faces after seating: ~SQUEEZE, not ~1 mm
+        face_pos = gg.finger_pos_for_width(0.045)
+        assert face_pos - plan["gripper_close"] > 0.0033, face_pos - plan["gripper_close"]
+
+
+def test_round_object_close_target_is_unchanged_by_seated_width():
+    c = (0.45, 0.0)
+    can, can_corners = cylinder(*c, 0.02235, 0.0816)
+    plan, diag = plan_scene([can], can_corners, c, [0.0816, 0.0447, 0.0447])
+    assert plan is not None, diag
+    assert abs(diag["seated_contact"] - diag["contact_width"]) < 1e-9
+
+
+def test_round_objects_keep_the_default_axis_with_deviation_allowed():
+    c = (0.45, 0.0)
+    can, can_corners = cylinder(*c, 0.02235, 0.0816)
+    plan, diag = plan_scene([can], can_corners, c, [0.0816, 0.0447, 0.0447],
+                            max_dev=math.radians(40.0))
+    assert plan is not None, diag
+    assert abs(diag["axis_dev"]) < 1e-9, math.degrees(diag["axis_dev"])
+
+
 def test_turned_box_would_turn_in_the_jaws():
     """A 34 mm box turned 30°: with the closing axis fixed across the approach
     the jaws land on two corners and would turn the box 30° before a face

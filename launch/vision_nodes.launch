@@ -8,7 +8,15 @@
        rosservice call /locobot/task/get_object "target_name: 'bottle'" -->
   <arg name="use_vlm_agent"       default="true"/>
   <arg name="vlm_model"           default="qwen3-vl:2b-instruct"/>
-  <arg name="max_agent_steps"     default="5"/>
+  <!-- 5 was sized for the old single-tool design (get_object alone did pick
+       AND place, "call it again up to 3 times total" per the old prompt). Now
+       get_object only holds — a full task needs get_object (itself sometimes
+       taking several retries against real-world positioning misses),
+       inspect_object, update_plan, and a final answer in the SAME budget.
+       Live-measured 2026-10-07: get_object alone took 4 retries (5 steps) to
+       land a single successful grasp, leaving zero budget for anything after
+       it — raised accordingly. -->
+  <arg name="max_agent_steps"     default="15"/>
   <arg name="grasp_min_interval_s" default="5.0"/>
 
   <!-- YOLO args -->

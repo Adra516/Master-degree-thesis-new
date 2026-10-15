@@ -1,9 +1,13 @@
 <launch>
   <!--
     locobot_table.launch
-    --------------------
-    Shortcut launch file that starts the full locobot simulation inside the
-    table+objects world with the vision pipeline active and targeting a bottle.
+    ====================
+    Shortcut launch file for the plain single-room pick-and-place world
+    (worlds/locobot_table.world): just the 4 walls, the table, and the 4
+    original objects (bottle, tea_box, can_coke, ball), at their original
+    positions — no second room, no office furniture. Use this instead of
+    the default locobot.launch when the two-room environment
+    (worlds/locobot_two_room_env.world) isn't wanted.
 
     Usage:
       roslaunch locobot_prog locobot_table.launch
@@ -13,8 +17,8 @@
       yolo_target_classes:="['cup','bottle']"
   -->
   <include file="$(find locobot_prog)/launch/locobot.launch">
-    <!-- Select the table world by passing world_name directly -->
-    <arg name="world_name"            value="$(find locobot_prog)/worlds/locobot_table_objects.world"/>
+    <!-- Select the plain table world by passing world_name directly -->
+    <arg name="world_name"            value="$(find locobot_prog)/worlds/locobot_table.world"/>
 
     <!-- Enable the full vision pipeline -->
     <arg name="use_vision_nodes"      value="true"/>

@@ -68,8 +68,11 @@ add_message_files(
 #   SetArmPose..ExecutePlace : arm_node
 #   DriveRelative/ApproachTarget : navigation_node
 #   GetScene/GetTarget/TargetMemory : world_model_node
-#   GetObject/NavigateTo : task_orchestrator half of world_model_node
+#   GetObject/NavigateTo/InspectObject : task_orchestrator half of world_model_node
 #   PlanGrasp : world_model_node's ~plan_grasp (the depth-image grasp planner)
+#   SetJoint : arm_node, single-joint primitive used by inspect_object's rotation sweep
+#   ShiftArm : arm_node, Cartesian-offset primitive used by inspect_object's obstacle dodge
+#   RunTask : vlm_agent_node, runs one natural-language task through the VLM tool-use loop
 add_service_files(
   FILES
   SetArmPose.srv
@@ -78,6 +81,8 @@ add_service_files(
   ExecutePregrasp.srv
   ExecuteGrasp.srv
   ExecutePlace.srv
+  SetJoint.srv
+  ShiftArm.srv
   DriveRelative.srv
   ApproachTarget.srv
   GetScene.srv
@@ -85,7 +90,9 @@ add_service_files(
   TargetMemory.srv
   GetObject.srv
   NavigateTo.srv
+  InspectObject.srv
   PlanGrasp.srv
+  RunTask.srv
 )
 
 ## Generate added messages and services with any dependencies listed here
@@ -197,6 +204,7 @@ catkin_install_python(PROGRAMS
   scripts/world_model_node.py
   scripts/detection_shim.py
   scripts/vlm_agent_node.py
+  scripts/agent_repl.py
   #scripts/set_arm_position.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

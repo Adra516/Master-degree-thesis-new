@@ -202,7 +202,9 @@ class GraspDiagnostics:
                     "along-jaw=%+.1fmm (0=centred)  in-plane-miss=%.1fmm  straddled=%s",
                     obj[0], obj[1], obj[2], along*1000, perp*1000, straddled)
                 gate = {"along_jaw_mm": along*1000, "in_plane_miss_mm": perp*1000,
-                        "straddled": straddled, "source": "odom"}
+                        "straddled": straddled, "source": "odom",
+                        "jaw_gap_mm": gap*1000,
+                        "axis_xy": [float(u[0]), float(u[1])]}   # closing axis, base frame
                 payload.update(dict(gate, object_base=obj.tolist(),
                                     offset_mm=(rel*1000).tolist()))
 

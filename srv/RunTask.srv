@@ -1,0 +1,11 @@
+# Give the VLM agent one natural-language task and run its tool-use loop to
+# completion (served by vlm_agent_node.py). The task is appended to the
+# agent's ongoing conversation — earlier run_task calls in the same node
+# lifetime are still in context, so a follow-up task can refer back to
+# what an earlier one found. Returns the VLM's final text answer plus the
+# shared plan/state JSON as it stood when the loop ended.
+string task
+---
+bool success
+string answer        # the VLM's final text response
+string plan_json      # the plan/state JSON (see PlanState in vlm_agent_node.py)

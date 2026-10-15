@@ -31,7 +31,43 @@
            released mid-carry instead (finger creep + sag in the soft joint). -->
       <forces_angle_tolerance>120</forces_angle_tolerance>
       <update_rate>20</update_rate>
-      <grip_count_threshold>1</grip_count_threshold>
+      <!-- RAISED 2026-10-07: threshold=1 (weld after ~2 frames, ~100ms of
+           contact at 20Hz) welded onto a fingertip graze during the open-jaw
+           approach more than once this session — jaw_gap=57.0mm (barely
+           closed from fully open) at the moment GazeboGraspFix attached, so
+           the object was rigidly fixed to the palm before the fingers had
+           actually closed around it. The next commanded close (target
+           23.6mm) then fought a geometrically-impossible rigid constraint —
+           fingers stalled -1.0mm from fully open — which is a strong
+           candidate for the "whole robot destabilizes, arm/fingers
+           oscillate" symptom reported live: the effort controllers straining
+           against an unyielding weld, not a PID/gain regression (the existing
+           forearm_roll override, config/arm_gains_override.yaml, is
+           unchanged and was independently re-verified wired correctly this
+           session). Tried at 4 (~250ms sustained contact) first: live-verified
+           2/2 clean closes (no stall, width matched the close target both
+           times) — but both of those ALSO came out of inspect_object's later
+           placement tipped over (one still visibly tumbling, angular.y=-0.42
+           rad/s, when checked), where two earlier same-session cycles at
+           threshold=1 had come out upright. Hypothesis: a longer wait before
+           the weld gives the object more time to settle UNEVENLY against the
+           palm before that tilt gets locked in — inspect_object's own
+           wrist_rotate "return to centre" fix only undoes rotation IT
+           introduced, not a tilt baked in at weld time. Backed off to 2
+           (~150ms) to test whether a smaller delay still avoids the graze-
+           stall without giving the object as much time to settle
+           asymmetrically — not yet re-verified live. -->
+      <grip_count_threshold>2</grip_count_threshold>
+      <!-- max_grip_count stays 8. Tried 20 on 2026-10-09 (tolerance for a lost two-sided
+           grip 0.3 s to 0.9 s) as a fix for a held bottle letting go with the arm
+           motionless: 5 instrumented trials with a 40 s hold, only 1 fully clean, and the
+           one hold that failed (flicker 2.6 s after the lift) failed WITH the longer
+           tolerance. The lost grip there was not a brief flicker: the pads had stalled on
+           the wide part of the neck (raw finger gap 55.8 mm against 49.0 mm in the clean
+           hold) and the right pad force faded from 0.57 to 0.24 before the weld flickered.
+           So the cap only delays the release, it does not remove the cause. Not kept: it
+           has no demonstrated benefit and a slower release is untested on the stall-gate
+           path (the gate cycles the fingers for about 2 s before the arm retreats). -->
       <max_grip_count>8</max_grip_count>
       <release_tolerance>0.003</release_tolerance>
       <disable_collisions_on_attach>false</disable_collisions_on_attach>

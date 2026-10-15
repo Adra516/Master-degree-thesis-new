@@ -1,0 +1,12 @@
+# Rotate the currently-HELD object through a partial sweep so the camera
+# sees it from a few different angles, capturing one frame per step, then
+# place it back down at the point it was picked up from. Acts on whatever
+# get_object left held — takes no target name because there can only be one
+# held object at a time (get_object refuses a second pick while one is
+# already held). Refuses (success=false, nothing placed) if nothing is
+# currently held. The VLM's inspect_object tool.
+---
+bool success
+string message
+sensor_msgs/Image[] views   # one frame per rotation step, in sweep order
+string description

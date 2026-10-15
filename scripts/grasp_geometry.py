@@ -237,11 +237,27 @@ def pregrasp_verdict(meas, pos_tol_mm, ori_tol_deg):
     return True, f"ok ({err:.1f}mm, {ori:.1f}°)"
 
 
-def contact_verdict(metrics, miss_tol_mm):
+# How much of the free room each side of the object the arrival may use up. With a
+# 56 mm jaw gap and a 33 mm neck there are 11.4 mm per side; a pad that lands on
+# the neck interpenetrates it (kp=1e6 contact), and the depenetration burst is
+# what throws the bottle and spins the weak forearm_roll. Measured 2026-10-13 on
+# three bottle descents that arrived 10-25 mm off-centre: the old test only asked
+# whether the object's centre lay between the fingertips (|along| < 28 mm), and
+# passed -10.1 and +14.8 mm; both ended with the bottle thrown. Every descent
+# within +-2.6 mm was fine. 3/4 of the room leaves 8.5 mm for the bottle and 4.0 mm
+# for a 45 mm box, with the observed good arrivals (<= 2.6 mm) well inside both.
+CONTACT_ROOM_FRACTION = 0.75
+
+
+def contact_verdict(metrics, miss_tol_mm, width_mm=None, room_fraction=CONTACT_ROOM_FRACTION):
     """Are the OPEN jaws straddling the object, measured just before closing?
 
-    metrics : the dict returned by _diag_contact (along_jaw_mm, in_plane_miss_mm,
-              straddled), or None when no object position was available.
+    metrics  : the dict returned by _diag_contact (along_jaw_mm, in_plane_miss_mm,
+               straddled, and jaw_gap_mm), or None when no object position was
+               available.
+    width_mm : the object's width between the pads at the grip height, or None.
+               With it (and jaw_gap_mm) the offset is judged against the room that
+               is physically there on each side, not merely "between the tips".
 
     Refusing to close is the point: closing on a known off-centre object is the
     measured failure where the jaws shove the target across the table instead of
@@ -256,7 +272,125 @@ def contact_verdict(metrics, miss_tol_mm):
     if miss > miss_tol_mm:
         return False, (f"jaws {miss:.0f}mm off the object along the approach "
                        f"direction (tolerance {miss_tol_mm:.0f}mm)")
+    gap = metrics.get("jaw_gap_mm")
+    if width_mm is not None and gap is not None:
+        room = (float(gap) - float(width_mm)) / 2.0
+        if room > 0.0 and abs(along) > room_fraction * room:
+            return False, (f"object is {along:+.0f}mm off the jaw centre but there is only "
+                           f"{room:.0f}mm of room each side ({room_fraction * room:.0f}mm "
+                           f"allowed) — a pad would land on it")
     return True, f"ok (along-jaw {along:+.1f}mm, miss {miss:.1f}mm)"
+
+
+# Mirrors grasp_planner.SQUEEZE (duplicated, not imported: grasp_planner already
+# imports this module) — the per-finger distance a planned close target sits
+# inside the contact width it was derived from.
+PLANNER_SQUEEZE = 0.004
+
+
+def planned_width_mm(close_pos, full_close, squeeze=PLANNER_SQUEEZE):
+    """The pad-to-pad width a plan's close target was derived from, in mm, or None
+    when the plan is a full close (the width at the grip height is not trusted, so
+    it cannot size anything). Inverts close = finger_pos_for_width(w) - squeeze.
+    Measured on the logged bottle plans: the 33 mm band had a 36 mm contact width
+    (pads land on the wider neck just below), close target 23.0 mm -> 36 mm here.
+    Errs toward the WIDER object, i.e. toward less room, i.e. a stricter gate."""
+    if full_close:
+        return None
+    return jaw_width(float(close_pos) + squeeze) * 1000.0
+
+
+def centring_shift(metrics, miss_tol_mm, width_mm, room_fraction=CONTACT_ROOM_FRACTION,
+                   margin_mm=-1.0):
+    """(dx, dy) in metres that centres the OPEN jaws on the object, or None.
+
+    Only when the ONLY thing wrong is the along-jaw offset: straddled, within the
+    approach-miss tolerance, and offset beyond room_fraction of the room but still
+    within the room (+1 mm: the near pad may just touch; sliding moves it AWAY, so
+    that is still the safest move) — and the far pad stays clear. Needs the closing axis
+    (metrics["axis_xy"]) and the object width."""
+    if not metrics or width_mm is None or metrics.get("jaw_gap_mm") is None:
+        return None
+    if not metrics.get("straddled", True) or "axis_xy" not in metrics:
+        return None
+    if float(metrics.get("in_plane_miss_mm", 0.0)) > miss_tol_mm:
+        return None
+    along = float(metrics.get("along_jaw_mm", 0.0))
+    room = (float(metrics["jaw_gap_mm"]) - float(width_mm)) / 2.0
+    if room <= 0.0 or abs(along) <= room_fraction * room or abs(along) >= room - margin_mm:
+        return None
+    ux, uy = metrics["axis_xy"]
+    return (along / 1000.0 * ux, along / 1000.0 * uy)
+
+
+# ── Is the object actually still between the fingers? ────────────────────────
+# Measured over 10 fresh-launch bottle picks (2026-10-13, ground truth): get_object
+# reported success on 7 and NOT ONE held cleanly for 30 s. Every empty-gripper
+# outcome among them had the same finger signature, so this is not a guess:
+#   fingers at their commanded target (23.0 vs 22.6, 17.6 vs 22.6, 14.5 vs 22.4 mm)
+#   — an object, however tight, stops them SHORT of a target set inside its width;
+#   a finger reading past its own 37 mm limit (64 mm: the bottle thrown through
+#   the jaws); fingers fully open (37.1 mm) with success still reported.
+# A held bottle stalled 3.4-5.3 mm short of its target (28.1/24.3, 27.1/22.7,
+# 28.5/23.2; tea box 30.5/27.1, can 31.9/27.3), and a grip that later let go
+# showed the fingers snapping inward 10+ mm in 0.2 s.
+#
+# The margin below is set from the two clusters actually observed, with a gap
+# between them: bottle-gone outcomes rested within 0.4-1.0 mm of the target
+# (23.0/22.6, 24.4/23.4 in the user's own run, 23.5/22.6 with the bottle on the
+# floor at return — and the right finger 0.9 mm PAST its target), every real
+# hold at least 3.0 mm short on both fingers. 1.5 mm sits in that gap.
+#
+# KNOWN COST: a grip that is real but extremely marginal (both fingers < 1.5 mm
+# short, i.e. under 3 mm of total interference with the plan) is called empty.
+# Failing a barely-held object is the cheaper error here: the alternative, still
+# measured today, is reporting "holding the bottle" with it on the floor.
+FINGER_MIN_POS = 0.015        # a finger's own lower joint limit; commands below it clip
+GRIP_OPEN_TRAVEL_MM = 3.0     # within this of fully open = closed on nothing
+GRIP_TARGET_REACH_MM = 1.5    # within this of the commanded target = nothing stopped it
+GRIP_SNAP_MM = 4.0            # drawn this far inward since the lift = the grip let go
+GRIP_READING_SLACK_MM = 2.0   # above FINGER_OPEN by more than this = not a real reading
+
+
+def grip_verdict(gw_m, close_target_m, finger_open_m=FINGER_OPEN, baseline_m=None, right_m=None):
+    """Is the object still between the fingers? Returns (held, reason).
+
+    gw_m           : the measured LEFT finger position now (m).
+    close_target_m : the per-finger position the close was commanded to, or None
+                     when no close happened (the target rule is then skipped).
+    baseline_m     : the left finger position right after the lift, or None; with
+                     it, a finger drawn inward by GRIP_SNAP_MM since is a grip that
+                     let go even though the target was never reached.
+    right_m        : the RIGHT finger as a positive magnitude, or None. The fingers
+                     are independent joints and a lopsided real grip leaves one of
+                     them near its target (measured: 24.7 vs a 23.6 target on the
+                     left, 31.4 on the right, with the bottle genuinely gripped),
+                     so "nothing stopped them" needs BOTH fingers at the target.
+
+    "held" here means only "the fingers show something was stopping them" — it
+    cannot prove the object is the right one, nor that it is not about to fall.
+    """
+    if gw_m > finger_open_m + GRIP_READING_SLACK_MM / 1000.0:
+        return False, (f"finger reading {gw_m * 1000:.0f}mm is beyond the finger's own "
+                       f"{finger_open_m * 1000:.0f}mm limit (the object was thrown through the jaws)")
+    # "Fully open" is judged on the MEAN of both fingers when the right one is known:
+    # an off-centre object stops one finger early. Measured 2026-10-14 on the can:
+    # left 33.8 / right 29.3 mm (pad gap 45.1 = the can's width), can rising in the
+    # jaws, yet the left finger alone read "fully open" and the jaws were opened on it.
+    mean_m = gw_m if right_m is None else (gw_m + right_m) / 2.0
+    if mean_m >= finger_open_m - GRIP_OPEN_TRAVEL_MM / 1000.0:
+        return False, f"fingers are fully open ({gw_m * 1000:.1f}mm) — nothing is gripped"
+    if close_target_m is not None:
+        reach = max(float(close_target_m), FINGER_MIN_POS) + GRIP_TARGET_REACH_MM / 1000.0
+        if gw_m <= reach and (right_m is None or right_m <= reach):
+            return False, (f"fingers closed all the way to their {close_target_m * 1000:.1f}mm "
+                           f"target ({gw_m * 1000:.1f}mm"
+                           + (f" / {right_m * 1000:.1f}mm" if right_m is not None else "")
+                           + ") — nothing stopped them")
+    if baseline_m is not None and baseline_m - gw_m > GRIP_SNAP_MM / 1000.0:
+        return False, (f"fingers snapped inward {(baseline_m - gw_m) * 1000:.0f}mm since the "
+                       f"lift — the grip let go")
+    return True, ""
 
 
 # How far the odometry-held object position may sit from the commanded grasp point
@@ -323,6 +457,39 @@ def descent_height(commanded_z, object_z, tol_mm=REAIM_Z_TOL_MM, max_mm=REAIM_Z_
     if abs(dz) <= max_mm:
         return float(object_z), "reaimed", dz
     return float(commanded_z), "refused", dz
+
+
+def follow_reference(aim_xyz, ref0_xyz, ref_now_xyz, tol_xy_mm=2.0, tol_z_mm=3.0,
+                     max_xy_mm=REAIM_MAX_MM, max_z_mm=REAIM_Z_MAX_MM):
+    """Carry an aim point along with the object's odometry-held reference.
+
+    The leg's aim is taken once, at the start of the descent, but the unwind of the
+    wrist, the leg itself and the settle-holds follow it by 6-10 s, during which the
+    base keeps moving relative to the world (measured: 11-30 mm on the three
+    off-centre bottle arrivals; the aim and the contact gate both used the value
+    from before). The reference is world-fixed, so re-reading it and applying the
+    DIFFERENCE since the aim was taken follows the object without needing the
+    camera, which the arm occludes.
+
+    aim_xyz      : the point being aimed at, base_link, as taken at ref0.
+    ref0_xyz     : the reference as read when the aim was taken (None = unknown).
+    ref_now_xyz  : the reference read now (None = unavailable).
+    Returns (new_aim, verdict, (dxy_mm, dz_mm)); verdict is "ok" (within noise),
+    "followed", "unavailable", or "refused" (moved further than the re-aim limit
+    — too much to trust, the aim is left alone).
+    """
+    if ref0_xyz is None or ref_now_xyz is None:
+        return tuple(aim_xyz), "unavailable", (0.0, 0.0)
+    dx = float(ref_now_xyz[0]) - float(ref0_xyz[0])
+    dy = float(ref_now_xyz[1]) - float(ref0_xyz[1])
+    dz = float(ref_now_xyz[2]) - float(ref0_xyz[2])
+    dxy_mm, dz_mm = math.hypot(dx, dy) * 1000.0, dz * 1000.0
+    if dxy_mm > max_xy_mm or abs(dz_mm) > max_z_mm:
+        return tuple(aim_xyz), "refused", (dxy_mm, dz_mm)
+    if dxy_mm <= tol_xy_mm and abs(dz_mm) <= tol_z_mm:
+        return tuple(aim_xyz), "ok", (dxy_mm, dz_mm)
+    return ((float(aim_xyz[0]) + dx, float(aim_xyz[1]) + dy, float(aim_xyz[2]) + dz),
+            "followed", (dxy_mm, dz_mm))
 
 
 def _nearest_square_equivalent(yaw, bearing):

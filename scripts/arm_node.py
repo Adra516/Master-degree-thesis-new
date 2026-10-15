@@ -7,6 +7,10 @@
   ~execute_pregrasp   (ExecutePregrasp)  PHASE 1: every object an obstacle, stop at the standoff
   ~execute_grasp      (ExecuteGrasp)     PHASE 2: target released, straight in, close, lift
   ~execute_place      (ExecutePlace)     lower and release
+  ~set_joint          (SetJoint)         move one joint, holding the rest — used by
+                                         TaskOrchestrator's inspect_object rotation sweep
+  ~shift_arm          (ShiftArm)         Cartesian offset from the current EE pose — used
+                                         by inspect_object to dodge a nearby obstacle
 
 Ported near-verbatim from rework-attempt-1's scripts/arm_node.py — see
 grasp_executor.py's module docstring for what "ported" means here: the logic,
@@ -30,6 +34,7 @@ import actionlib
 import moveit_commander
 import rospy
 import tf2_ros
+from geometry_msgs.msg import Point
 from moveit_commander import PlanningSceneInterface
 from moveit_msgs.msg import MoveGroupAction
 
@@ -42,7 +47,7 @@ from moveit_msgs.msg import MoveGroupAction
 # `roslaunch` (never surfaced by direct `python3 arm_node.py` testing, where
 # the auto-prepend happens to already be correct).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from arm_actuators import ARM_POSES, CAMERA_CLEAR_POSE, ArmActuator, Gripper
+from arm_actuators import ARM_JOINTS, ARM_POSES, CAMERA_CLEAR_POSE, ArmActuator, Gripper
 from arm_diagnostics import GraspDiagnostics
 from collision_scene import CollisionScene
 from grasp_executor import GraspExecutor
@@ -51,7 +56,8 @@ from locobot_prog.srv import (ExecuteGrasp, ExecuteGraspResponse, ExecutePlace,
                               ExecutePlaceResponse, ExecutePregrasp,
                               ExecutePregraspResponse, GetGripperState,
                               GetGripperStateResponse, SetArmPose, SetArmPoseResponse,
-                              SetGripper, SetGripperResponse)
+                              SetGripper, SetGripperResponse, SetJoint, SetJointResponse,
+                              ShiftArm, ShiftArmResponse, TargetMemory, TargetMemoryRequest)
 
 # How far short of its commanded close target a finger must stop before the grip
 # counts as holding something. Above joint/controller settling noise, well below
@@ -120,6 +126,17 @@ class ArmNode:
             ns, move_group, robot, self.arm, self.gripper,
             CollisionScene(ns, PlanningSceneInterface()),
             GraspDiagnostics(ns, move_group, tf_buffer))
+
+        # The object's odometry-held reference, re-read DURING a descent so the aim
+        # and the contact gate follow the object while the base creeps (a service call
+        # to the world model, like every other cross-node read). Unavailable -> None ->
+        # the executor keeps the aim it took at the start, exactly as before.
+        _memory = rospy.ServiceProxy(f"/{ns}/world_model/target_memory", TargetMemory)
+
+        def _object_reference():
+            r = _memory(action=TargetMemoryRequest.REPROJECT)
+            return (r.position.x, r.position.y, r.position.z) if r.ok else None
+        self.executor.object_ref_fn = _object_reference
         rospy.sleep(1.0)
 
         # One command at a time, as the old topic interface did: two steps must
@@ -134,6 +151,8 @@ class ArmNode:
                       self._guard(self._execute_grasp, ExecuteGraspResponse))
         rospy.Service("~execute_place", ExecutePlace,
                       self._guard(self._execute_place, ExecutePlaceResponse))
+        rospy.Service("~set_joint", SetJoint, self._guard(self._set_joint, SetJointResponse))
+        rospy.Service("~shift_arm", ShiftArm, self._guard(self._shift_arm, ShiftArmResponse))
         rospy.loginfo("[arm] Ready.")
 
     def _guard(self, handler, response_class):
@@ -207,6 +226,44 @@ class ArmNode:
         p = req.place_point
         ok, info = self.executor.place(p.x, p.y, None if req.at_grasp_height else p.z)
         return ExecutePlaceResponse(success=ok, message=f"placed at {info['placed_at']}")
+
+    def _set_joint(self, req):
+        """Move exactly one joint, holding every other joint at the arm's last
+        commanded value. Reads from last_target (not a fresh move_group
+        measurement) for the same reason hold() does: a raw joint read can land
+        on the wrist's other IK branch (see hold()'s own docstring) — the value
+        we ourselves last commanded is the one we know is right.
+
+        A NaN position is a pure read: no motion, just last_target reported
+        back. Callers in a DIFFERENT process (TaskOrchestrator) have no other
+        way to get a value as trustworthy as last_target — their own
+        joint_states subscription is exactly the kind of raw read this
+        docstring's first paragraph is warning about."""
+        if req.joint_name not in ARM_JOINTS:
+            return SetJointResponse(success=False,
+                                    message=f"Unknown joint: {req.joint_name} "
+                                            f"(known: {', '.join(ARM_JOINTS)})")
+        if len(req.hold_positions) == len(ARM_JOINTS):
+            base = list(req.hold_positions)
+        else:
+            base = self.arm.last_target
+        if base is None:
+            return SetJointResponse(success=False,
+                                    message="No commanded pose yet to hold the other joints at")
+        if req.position != req.position:   # NaN: read-only, no motion
+            return SetJointResponse(success=True, joint_positions=list(base))
+        positions = list(base)
+        positions[ARM_JOINTS.index(req.joint_name)] = req.position
+        move_time = req.move_time if req.move_time > 0 else 1.2
+        self.arm.send_joints(positions, move_time=move_time)
+        self.arm.hold(0.3)
+        return SetJointResponse(success=True, joint_positions=list(self.arm.last_target))
+
+    def _shift_arm(self, req):
+        move_time = req.move_time if req.move_time > 0 else 1.5
+        ok, info = self.executor.shift(req.dx, req.dy, req.dz, move_time)
+        ee = Point(info.get("x", 0.0), info.get("y", 0.0), info.get("z", 0.0))
+        return ShiftArmResponse(success=ok, message=info.get("reason", ""), ee_position=ee)
 
     def run(self):
         rospy.loginfo("[arm] Moving arm to camera-clear pose.")

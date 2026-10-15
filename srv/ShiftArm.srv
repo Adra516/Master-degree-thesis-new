@@ -1,0 +1,14 @@
+# Move the end effector by a Cartesian offset (dx, dy, dz) from its CURRENT
+# pose, holding orientation fixed. A general single-move primitive — used by
+# TaskOrchestrator's inspect_object to pull a held object horizontally away
+# from a nearby obstacle before rotating it, WITHOUT driving the robot base
+# (dz=0 for that use). Collision-aware OFF, same reasoning as the existing
+# post-grasp retreat: moving away from a neighbour cannot collide with it.
+float64 dx
+float64 dy
+float64 dz
+float64 move_time   # seconds; <= 0 uses a sensible default
+---
+bool success
+string message
+geometry_msgs/Point ee_position   # where the EE ended up, for the caller's own bookkeeping

@@ -1,6 +1,6 @@
 <?xml version="1.0" ?>
 <sdf version="1.6">
-  <world name="locobot_table_arm">
+  <world name="locobot_table">
 
     <gravity>0 0 -9.81</gravity>
 

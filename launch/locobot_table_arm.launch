@@ -18,7 +18,7 @@
        applied inside locobot.launch itself, so they are active for BOTH this
        wrapper and a direct `roslaunch locobot_prog locobot.launch`. -->
   <include file="$(find locobot_prog)/launch/locobot.launch">
-    <arg name="world_name"           value="$(find locobot_prog)/worlds/locobot_table_arm.world"/>
+    <arg name="world_name"           value="$(find locobot_prog)/worlds/locobot_two_room_env.world"/>
     <arg name="use_vision_nodes"     value="true"/>
     <arg name="vision_target_object" value="bottle"/>
   </include>

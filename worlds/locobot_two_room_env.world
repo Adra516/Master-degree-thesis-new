@@ -1,0 +1,487 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="locobot_two_room_env">
+
+    <gravity>0 0 -9.81</gravity>
+
+    <physics type="ode">
+      <real_time_update_rate>500.0</real_time_update_rate>
+      <max_step_size>0.002</max_step_size>
+      <real_time_factor>1</real_time_factor>
+    </physics>
+
+    <scene>
+      <ambient>0.6 0.6 0.6 1</ambient>
+      <background>0.87 0.92 0.98 1</background>
+      <shadows>false</shadows>
+    </scene>
+
+    <!-- ── Lighting ────────────────────────────────────────────────────── -->
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <!-- ── Ground plane ───────────────────────────────────────────────── -->
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <!-- ── GUI camera ─────────────────────────────────────────────────── -->
+    <gui fullscreen="0">
+      <camera name="user_camera">
+        <pose>-1.2 0.0 2.0 0 0.65 0.0</pose>
+        <view_controller>orbit</view_controller>
+      </camera>
+    </gui>
+
+    <!-- ── Room walls ─────────────────────────────────────────────────── -->
+    <model name="wall_north">
+      <static>true</static>
+      <pose>1.5 3.0 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>6.0 0.2 2.0</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>6.0 0.2 2.0</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_south">
+      <static>true</static>
+      <pose>1.5 -3.0 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>6.0 0.2 2.0</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>6.0 0.2 2.0</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <!-- Was one solid wall_east box; now split around a 1.1 m open doorway
+         (y -2.05..-0.95, well clear of the table/standoff corridor near
+         y=0) into the new office room (Room B) to the east. No door leaf
+         spans the gap — see the swung-open door panel near the end of this
+         file. -->
+    <model name="wall_east_a">
+      <static>true</static>
+      <pose>4.5 -2.525 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.2 0.95 2.0</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.2 0.95 2.0</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_east_b">
+      <static>true</static>
+      <pose>4.5 1.025 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.2 3.95 2.0</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.2 3.95 2.0</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- wall_west: was one solid box; now built around an 0.8 m window
+         (the `window` model's own glazed-panel size), sill and lintel
+         closing the gap above/below it. -->
+    <model name="wall_west_a">
+      <static>true</static>
+      <pose>-1.5 -1.7 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.2 2.6 2.0</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.2 2.6 2.0</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_west_b">
+      <static>true</static>
+      <pose>-1.5 1.7 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.2 2.6 2.0</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.2 2.6 2.0</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_west_sill">
+      <static>true</static>
+      <pose>-1.5 0 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.2 0.8 0.5</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.2 0.8 0.5</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_west_lintel">
+      <static>true</static>
+      <pose>-1.5 0 1.65 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.2 0.8 0.7</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.2 0.8 0.7</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <include>
+      <uri>model://window</uri>
+      <name>window_room_a</name>
+      <pose>-1.5 0 0 0 0 1.5708</pose>
+    </include>
+
+    <!-- Pavement floor tile for Room A, using the real asphalt-textured
+         material (same technique as carpet_room_b, a flat visual-only
+         overlay on the ground plane). -->
+    <model name="pavement_room_a">
+      <static>true</static>
+      <pose>1.5 0 0.005 0 0 0</pose>
+      <link name="link">
+        <visual name="v">
+          <geometry><box><size>5.8 5.8 0.01</size></box></geometry>
+          <material>
+            <script>
+              <uri>model://asphalt_plane/materials/scripts</uri>
+              <uri>model://asphalt_plane/materials/textures</uri>
+              <name>vrc/asphalt</name>
+            </script>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <!-- A little greenery, clear of the table/standoff approach corridor -->
+    <include>
+      <uri>model://plant_3</uri>
+      <name>plant_room_a</name>
+      <pose>-1.0 -2.5 0 0 0 0</pose>
+    </include>
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         TABLE
+         ──────────────────────────────────────────────────────────────────
+         Dimensions, in the table model's OWN local frame : 0.4 m (depth) ×
+         0.8 m (width) × 0.25 m tall.
+
+         Table pose: yaw 1.5708 — the whole model (top + 4 legs, a single
+         rigid SDF model) rotated 90 degrees so its LONG 0.8m edge now
+         runs parallel to the north wall (world X), flush against it,
+         instead of perpendicular to it — matching a real desk-against-
+         a-wall look. Centre (3.0, 2.70): a 5cm gap from the wall's inner
+         face (2.9), not touching it. The 4 objects on top are NOT child
+         links of this model, so each one's own world position below was
+         recomputed by hand for the new orientation (not a simple offset
+         carry-over this time).
+         Table-top surface : z = 0.25 m (unchanged)
+
+         Operational note: the robot still SPAWNS at the origin facing +X,
+         and the camera's default pan/tilt was tuned for the table dead
+         ahead. Now that it's off at a ~41 degree bearing, the first
+         get_object/navigate_to call after spawn needs the base rotated
+         toward it first (e.g. drive_relative) — this pipeline has no
+         automatic "rotate and search" behaviour of its own; a target
+         never yet seen just reports "not detected".
+
+         Arm reachability note (WidowX 250s):
+           arm base height ≈ 0.28 m, max horizontal reach ≈ 0.55 m.
+           Objects placed ≈ 0.45–0.50 m from the table centre → well
+           within reach. Table height 0.25 m ≈ arm base − 0.03 m → arm
+           points slightly down, giving comfortable manipulation clearance.
+         ══════════════════════════════════════════════════════════════════ -->
+    <model name="table">
+      <static>true</static>
+      <pose>3.00 2.70 0 0 0 1.5708</pose>
+
+      <!-- Table top  0.4 (X) × 0.8 (Y) × 0.05 (Z) -->
+      <link name="top">
+        <pose>0 0 0.225 0 0 0</pose>
+        <collision name="top_col">
+          <geometry><box><size>0.4 0.8 0.05</size></box></geometry>
+        </collision>
+        <visual name="top_vis">
+          <geometry><box><size>0.4 0.8 0.05</size></box></geometry>
+          <material>
+            <ambient>0.55 0.35 0.15 1</ambient>
+            <diffuse>0.65 0.42 0.18 1</diffuse>
+          </material>
+        </visual>
+      </link>
+
+      <!-- Legs height = 0.20 m, centre at z = 0.10 m -->
+      <!-- front = toward robot (-X in table frame), left = -Y, right = +Y -->
+      <link name="leg_fl">
+        <pose>-0.165 -0.365 0.10 0 0 0</pose>
+        <collision name="c"><geometry><box><size>0.05 0.05 0.20</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.05 0.05 0.20</size></box></geometry>
+          <material><ambient>0.4 0.25 0.1 1</ambient><diffuse>0.5 0.3 0.12 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="leg_fr">
+        <pose>-0.165  0.365 0.10 0 0 0</pose>
+        <collision name="c"><geometry><box><size>0.05 0.05 0.20</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.05 0.05 0.20</size></box></geometry>
+          <material><ambient>0.4 0.25 0.1 1</ambient><diffuse>0.5 0.3 0.12 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="leg_bl">
+        <pose> 0.165 -0.365 0.10 0 0 0</pose>
+        <collision name="c"><geometry><box><size>0.05 0.05 0.20</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.05 0.05 0.20</size></box></geometry>
+          <material><ambient>0.4 0.25 0.1 1</ambient><diffuse>0.5 0.3 0.12 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="leg_br">
+        <pose> 0.165  0.365 0.10 0 0 0</pose>
+        <collision name="c"><geometry><box><size>0.05 0.05 0.20</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.05 0.05 0.20</size></box></geometry>
+          <material><ambient>0.4 0.25 0.1 1</ambient><diffuse>0.5 0.3 0.12 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         OBJECTS ON THE TABLE  (table top surface at z = 0.25 m)
+         Objects are spread along Y so they are all visible from the front.
+         ══════════════════════════════════════════════════════════════════ -->
+
+    <!-- ── Beer bottle (bottle_beer from models folder) ──────────────── -->
+    <include>
+      <uri>model://bottle_beer</uri>
+      <name>bottle</name>
+      <pose>3.10 2.65 0.25 0 0 0</pose>
+      <static>false</static>
+    </include>
+    
+    <!-- ── Tea box (replaces the tissue box — GRASP TARGET) ────────────────
+         Square-footprint box, rescaled in the model to 0.045 x 0.045 x 0.09 m.
+         WHY those dimensions: with the top-down approach removed the grasp is
+         HORIZONTAL only, and the jaws close at a floor of 7 cm above the table
+         (_compute_grasp_z) — so the target must be TALLER than that (9 cm puts
+         the grip mid-body) while staying inside the gripper's ~74 mm opening
+         (6 cm -> ~7 mm clearance per side).  The old tissue box was only 2.6 cm
+         tall, i.e. ungraspable horizontally: the jaws closed on air above it.
+         Model origin is the box BASE, so pose.z = table surface. -->
+    <include>
+      <uri>model://tea_box</uri>
+      <name>tea_box</name>
+      <pose>2.90 2.70 0.251 0 0 0</pose>
+      <static>false</static>
+    </include>
+
+    <!-- ── Coke can (replaces wood_cube_b — scene diversity) ────────────── -->
+    <!-- Mesh origin is at the can's BASE (not centre, unlike the box
+         primitives above) — pose.z = table surface, not surface + half-height. -->
+    <include>
+      <uri>model://can_coke</uri>
+      <name>can_coke</name>
+      <pose>2.75 2.65 0.251 0 0 0</pose>
+      <static>false</static>
+    </include>
+
+    <!-- Ball removed per request, replaced with a simple mug for scene
+         variety. There's no plain "mug" model in this collection, only
+         mug_beer (glass, handled, beer-filled) and several cup_* —
+         cup_blue is the closest match to "a simple mug" (plain, opaque,
+         no drink inside).
+         NOTE: this is a plain decorative prop, not added to
+         config/objects.yaml — it is not a catalogued grasp target, and
+         "ball" is no longer spawned at all (get_object("ball") will now
+         report not-detected; bottle/tea_box/can_coke are unaffected). -->
+    <include>
+      <uri>model://cup_blue</uri>
+      <name>mug</name>
+      <pose>3.30 2.70 0.25 0 0 0</pose>
+      <static>false</static>
+    </include>
+
+    <!-- ── Room A: sofa backed flush against the south wall (parallel to
+         it, not diagonal), floor lamp at its end, two chairs relocated
+         away from the sofa to the west side of the room ───────────────── -->
+    <include>
+      <uri>model://sofa_set_1</uri>
+      <name>sofa_set_room_a</name>
+      <pose>2.5 -2.5 0 0 0 3.14159</pose>
+    </include>
+    <include>
+      <uri>model://chair_1</uri>
+      <name>chair_room_a_1</name>
+      <pose>-0.8 1.2 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://chair_2</uri>
+      <name>chair_room_a_2</name>
+      <pose>-0.8 -1.2 0 0 0 0</pose>
+    </include>
+    <!-- moved to the sofa's OTHER (west) end — the east end is too tight
+         against the doorway wall, and 3.6 turned out to still be inside
+         the sofa's own footprint -->
+    <include>
+      <uri>model://lamp_table_large</uri>
+      <name>floor_lamp_room_a</name>
+      <pose>0.8 -2.7 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://plant_2</uri>
+      <name>plant_room_a_2</name>
+      <pose>-1.0 2.3 0 0 0 0</pose>
+    </include>
+    <!-- A second cabinet, against the east (shared) wall where it's clear
+         (that wall is solid from y -0.95 to 3) -->
+    <include>
+      <uri>model://file_cabinet_large</uri>
+      <name>cabinet_room_a</name>
+      <pose>4.2 1.0 0 0 0 3.1416</pose>
+    </include>
+    <!-- Trash bin near the table -->
+    <include>
+      <uri>model://trash_bin</uri>
+      <name>trash_bin_room_a</name>
+      <pose>4.2 2.2 0 0 0 0</pose>
+    </include>
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         ROOM B — a second office room east of the pick-and-place room
+         (Room A), reached through the open doorway in wall_east_a/b above.
+         Same footprint as Room A (6 x 6 m), x: 4.5..10.5, y: -3..3.
+         ══════════════════════════════════════════════════════════════════ -->
+    <model name="wall_b_north">
+      <static>true</static>
+      <pose>7.5 3.0 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>6.0 0.2 2.0</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>6.0 0.2 2.0</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_b_south">
+      <static>true</static>
+      <pose>7.5 -3.0 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>6.0 0.2 2.0</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>6.0 0.2 2.0</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <!-- East wall, with a window matching wall_west's construction -->
+    <model name="wall_b_east_a">
+      <static>true</static>
+      <pose>10.5 -1.7 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.2 2.6 2.0</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.2 2.6 2.0</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_b_east_b">
+      <static>true</static>
+      <pose>10.5 1.7 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.2 2.6 2.0</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.2 2.6 2.0</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_b_east_sill">
+      <static>true</static>
+      <pose>10.5 0 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.2 0.8 0.5</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.2 0.8 0.5</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_b_east_lintel">
+      <static>true</static>
+      <pose>10.5 0 1.65 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.2 0.8 0.7</size></box></geometry></collision>
+        <visual   name="v"><geometry><box><size>0.2 0.8 0.7</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <include>
+      <uri>model://window</uri>
+      <name>window_room_b</name>
+      <pose>10.5 0 0 0 0 1.5708</pose>
+    </include>
+
+    <!-- Dark carpet tile, purely visual, matching an office-floor look -->
+    <model name="carpet_room_b">
+      <static>true</static>
+      <pose>7.5 0 0.005 0 0 0</pose>
+      <link name="link">
+        <visual name="v"><geometry><box><size>5.8 5.8 0.01</size></box></geometry>
+          <material><ambient>0.15 0.15 0.17 1</ambient><diffuse>0.18 0.18 0.2 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ── Room B furniture — kept deliberately simple: one workstation,
+         one plant, one picture ──────────────────────────────────────── -->
+    <include>
+      <uri>model://desk_brown</uri>
+      <name>desk_1</name>
+      <pose>7.5 2.55 0 0 0 3.1416</pose>
+    </include>
+    <include>
+      <uri>model://monitor_1</uri>
+      <name>monitor_1</name>
+      <pose>7.5 2.75 0.75 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://office_chair</uri>
+      <name>chair_desk_1</name>
+      <pose>7.5 1.9 0 0 0 3.14159</pose>
+    </include>
+    <include>
+      <uri>model://plant_1</uri>
+      <name>plant_1</name>
+      <pose>5.0 -2.7 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://file_cabinet_small</uri>
+      <name>file_cabinet</name>
+      <pose>9.9 2.6 0 0 0 3.1416</pose>
+    </include>
+    <!-- Moved off the desk's north wall onto the east (window) wall,
+         near the sofa's corner — south of the window gap, clear of it.
+         yaw -1.5708 (not +1.5708): this wall runs along Y, so its width
+         axis needs to point along Y (same reasoning as the north-wall
+         fix above, rotated the other way since this wall faces -X, not
+         -Y); the sign sets which of the two matching rotations actually
+         opens toward the room rather than into the wall. -->
+    <include>
+      <uri>model://bookshelf_large</uri>
+      <name>bookshelf</name>
+      <pose>10.2 -1.5 0 0 0 -1.5708</pose>
+    </include>
+    <!-- backed flush against the south wall (parallel to it, not
+         diagonal) -->
+    <include>
+      <uri>model://sofa_set_1</uri>
+      <name>sofa_set</name>
+      <pose>8.5 -2.5 0 0 0 3.14159</pose>
+    </include>
+    <include>
+      <uri>model://side_table_1</uri>
+      <name>side_table_mid</name>
+      <pose>7.5 -0.3 0 0 0 0</pose>
+    </include>
+    <!-- yaw 1.5708 (not 0): this model's face points along its own local
+         Y, so on a wall whose inward normal is -Y it has to be rotated
+         90 deg to actually face into the room — verified live (yaw 0
+         rendered as an edge-on sliver, barely visible). Height lowered
+         from 1.6 to 1.3. -->
+    <include>
+      <uri>model://picture_frame_large_1</uri>
+      <name>picture_1</name>
+      <pose>7.4 2.85 1.3 0 0 -1.5708</pose>
+    </include>
+
+  </world>
+</sdf>

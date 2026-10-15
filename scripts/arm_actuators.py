@@ -30,8 +30,6 @@ ARM_POSES = {
 
 
 # A measured joint vector further than this (rad, any joint) from the last pose
-# we commanded is a bad read, not the arm: tracking error and gravity droop are
-# ~0.05 rad, so ~20° of disagreement means the read is garbage.
 HOLD_MAX_DEV = 0.35
 
 
@@ -117,6 +115,11 @@ class Gripper:
 
     def __init__(self, robot_name):
         self.position = FINGER_OPEN        # left_finger joint position, from joint_states
+        # right_finger as a positive magnitude (its joint runs negative), so it is
+        # directly comparable with `position`. The two fingers are independent
+        # PD joints, so an object can leave one of them near its target while the
+        # other is still stopped short — judging "held" needs both.
+        self.right_position = FINGER_OPEN
         self.pub = rospy.Publisher(f"/{robot_name}/gripper_controller/command",
                                    JointTrajectory, queue_size=1, latch=True)
         rospy.Subscriber(f"/{robot_name}/joint_states", JointState,
@@ -125,6 +128,8 @@ class Gripper:
     def _on_joint_states(self, msg):
         if "left_finger" in msg.name:
             self.position = msg.position[msg.name.index("left_finger")]
+        if "right_finger" in msg.name:
+            self.right_position = -msg.position[msg.name.index("right_finger")]
 
     def send(self, position, move_time=1.0):
         """Command both fingers (the controller requires both; right mirrors left)."""

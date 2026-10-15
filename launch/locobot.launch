@@ -18,7 +18,7 @@
   <arg name="use_perception"                    default="false"/>
 
   <arg name="rviz_frame"                        default="$(arg robot_name)/base_footprint"/>
-  <arg name="world_name"                        default="$(find locobot_prog)/worlds/locobot_table_arm.world"/>
+  <arg name="world_name"                        default="$(find locobot_prog)/worlds/locobot_two_room_env.world"/>
   <arg name="gui"                               default="true"/>
   <arg name="debug"                             default="false"/>
   <arg name="paused"                            default="false"/>

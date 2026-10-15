@@ -1,6 +1,8 @@
-# Pick up the named object and put it back down: observe, navigate, grasp,
-# lift, place. The VLM's get_object tool. Plain-language fields end up in the
-# JSON the VLM reads.
+# Pick up the named object and HOLD it: observe, navigate, grasp, lift. Does
+# NOT place it back down — that is inspect_object's job now (InspectObject.srv),
+# so the VLM can look at a held object before deciding what happens to it.
+# Refuses (success=false) if something is already held. The VLM's get_object
+# tool. Plain-language fields end up in the JSON the VLM reads.
 string target_name
 ---
 bool success

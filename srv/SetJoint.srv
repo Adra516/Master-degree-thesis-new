@@ -1,0 +1,28 @@
+# Move exactly one arm joint to an absolute position, holding every other
+# joint at its current measured value. A general single-joint primitive —
+# not specific to any one caller — used by TaskOrchestrator's inspect_object
+# rotation sweep to turn a held object in front of the camera without
+# resetting the whole arm pose.
+#
+# hold_positions: optional, ARM_JOINTS-ordered (6 values) — when given, these
+# are used for the OTHER joints instead of the arm's current last_target.
+# Live-observed 2026-10-07: without this, repeated single-joint calls across
+# a multi-step sweep each re-read last_target fresh, and hold()'s own
+# settle-to-measured behaviour between calls lets tiny per-step measurement
+# noise in the "held" joints accumulate call over call — wrist_rotate itself
+# correctly returns to its exact starting number at the end of a sweep, but
+# the OTHER joints can have quietly drifted, so a held object came out
+# visibly tilted even though the sweep's own rotation was undone. A caller
+# doing several calls in sequence (like the inspect_object sweep) should
+# capture the full 6-value state ONCE before the first call and pass that
+# same snapshot on every call, so only the swept joint ever actually moves.
+string joint_name      # one of ARM_JOINTS (arm_actuators.py): waist,
+                        # shoulder, elbow, forearm_roll, wrist_angle,
+                        # wrist_rotate
+float64 position        # radians
+float64 move_time        # seconds; <= 0 uses a sensible default
+float64[] hold_positions  # optional, ARM_JOINTS order; empty = use last_target
+---
+bool success
+string message
+float64[] joint_positions   # full ARM_JOINTS-ordered state after the move

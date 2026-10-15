@@ -17,8 +17,11 @@ reversed), build the object's 8 box corners from its catalogued size, and
 project them (auto_label.project_box_to_bbox2d) to get the 2D label.
 
 Usage: run a sim WITHOUT the vision nodes (no YOLO needed for collection,
-only the camera + Gazebo + TF):
-    roslaunch locobot_prog locobot.launch use_vision_nodes:=false
+only the camera + Gazebo + TF), in the plain single-room world that still
+has all 5 classes under these exact model names (see CLASS_NAMES/
+GAZEBO_MODEL_NAME below — the default two-room world no longer has "ball"):
+    roslaunch locobot_prog locobot.launch use_vision_nodes:=false \
+        world_name:=$(rospack find locobot_prog)/worlds/locobot_table.world
 GOTCHA: set_camera_angle.py (which points the camera at the table, pan=0
 tilt=0.35) lives inside vision_nodes.launch, so use_vision_nodes:=false
 leaves the camera at its raw spawn angle — pointed at the robot's own
@@ -64,7 +67,7 @@ from resolver import ObjectCatalog
 # labeled (skipped with a one-time warning), not an error.
 # "table", not "dining_table": matches this project's own catalogue key
 # (config/objects.yaml) and the Gazebo model's own name (<model name="table">
-# in locobot_table_arm.world), consistent with how the other 4 classes are
+# in locobot_table.world), consistent with how the other 4 classes are
 # named after their catalogue key rather than a COCO label. The table is
 # `role: surface` in the catalogue but that only matters to the live
 # pipeline's obstacle logic — catalog.size() ignores it, so the table is
@@ -72,9 +75,12 @@ from resolver import ObjectCatalog
 # 0.40 x 0.80 x 0.25 m, origin at floor level, matching every other object's
 # "origin is the BASE" convention already assumed below).
 CLASS_NAMES = ["bottle", "tea_box", "can_coke", "ball", "table"]
-# Catalogue key -> Gazebo model name. Matches this project's world file
-# (locobot_table_arm.world's <name> tags) directly for every current class;
-# override here if a future world spawns an object under a different name.
+# Catalogue key -> Gazebo model name. Matches worlds/locobot_table.world's
+# <name> tags directly for every current class; that single-room world is
+# the one to collect from for this reason — the default two-room world
+# (locobot_two_room_env.world) replaced "ball" with a plain decorative mug,
+# so it no longer has all 5 of these models under these exact names.
+# Override here if a future world spawns an object under a different name.
 GAZEBO_MODEL_NAME = {k: k for k in CLASS_NAMES}
 
 

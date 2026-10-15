@@ -133,6 +133,16 @@ def seat_turn(w, i):
     return math.radians(abs((j - i + 90) % 180 - 90))
 
 
+def seated_width(w, i):
+    """The width (m) an object closed along axis i (degrees) has once it is SEATED:
+    the lowest w within the +-45 deg basin when that is lower than at i by more than
+    ROUND_TOL (a box turned in the jaws), else w[i]. For a 45 mm box sitting 9 deg
+    off, w[i] is the 51 mm corner span but the pads end up on the 45 mm faces."""
+    basin = (i + np.arange(-45, 46)) % 180
+    low = float(np.min(w[basin]))
+    return low if w[i] - low > ROUND_TOL else float(w[i])
+
+
 def slice_centre(band, bearing, depth):
     """Centre (x, y) of a band, from its visible points and the object's full
     depth along the approach (see the module header, step 2)."""
@@ -169,6 +179,7 @@ def contact_candidates(xy, bearing, max_dev=0.0, centre=None):
         i_l, i_r = int(np.argmax(proj)), int(np.argmin(proj))
         turn = seat_turn(w, int(round(math.degrees(phi))) % 180)
         out.append({"dev": dev, "axis": c, "width": float(proj[i_l] - proj[i_r]),
+                    "seated_width": seated_width(w, int(round(math.degrees(phi))) % 180),
                     "left": hull[i_l], "right": hull[i_r],
                     "turn": turn, "quality": math.cos(turn)})
     return out
@@ -268,13 +279,14 @@ def plan_from_points(points, table_z, bearing, dims_hwl, depth_hint=None, max_de
                 continue
             score = _band_score(cand, b.z, z_ref, env_width)
             if best is None or score > best[0]:
-                best = (score, b, cand, centre, depth, w * contact_ratio)
+                best = (score, b, cand, centre, depth, w * contact_ratio,
+                    min(cand['seated_width'], w) * contact_ratio)
     if best is None:
         diag["reason"] = ("no band in %.0f-%.0f mm fits the jaws" % (z_lo * 1000, z_hi * 1000)
                           + (f" ({rejected[0]})" if rejected else " (no points there)"))
         return None, diag
 
-    score, band, cand, xy, depth, contact_width = best
+    score, band, cand, xy, depth, contact_width, seated_contact = best
     width = cand["width"]
     z = table_z + band.z
 
@@ -284,7 +296,11 @@ def plan_from_points(points, table_z, bearing, dims_hwl, depth_hint=None, max_de
     quat = [float(v) for v in rotations.quaternion_from_euler(0.0, 0.0, yaw)]
     open_pos = float(np.clip(gg.finger_pos_for_width(width) + 0.022,
                              gg.FINGER_CLOSE + 0.008, gg.FINGER_OPEN))
-    close_pos = float(np.clip(gg.finger_pos_for_width(contact_width) - SQUEEZE,
+    # Close for the width the object SEATS to, not the corner span the pads touch first:
+    # a 45 mm box 9 deg off measured 51 mm across its corners, the close was sized for 51,
+    # and once it seated the pads squeezed ~1 mm each (a 0.07 N grip: it stayed on the
+    # table when lifted). The open width above stays the wide one.
+    close_pos = float(np.clip(gg.finger_pos_for_width(seated_contact) - SQUEEZE,
                               gg.FINGER_CLOSE, gg.FINGER_OPEN - 0.005))
     size = dims_hwl if dims_hwl is not None else gg.UNKNOWN_OBJECT_DIMS
 
@@ -301,7 +317,7 @@ def plan_from_points(points, table_z, bearing, dims_hwl, depth_hint=None, max_de
     right = np.append(cand["right"], z)
     diag.update(width=width, band_z=band.z, band_points=band.n, quality=cand["quality"],
                 turn=cand["turn"], axis_dev=cand["dev"], tapered=tapered,
-                contact_width=contact_width,
+                contact_width=contact_width, seated_contact=seated_contact,
                 visible_depth=band.a_back - band.a_front, depth_used=depth,
                 contact_left=left.tolist(), contact_right=right.tolist(),
                 anchor_z=z_ref, score=score)
