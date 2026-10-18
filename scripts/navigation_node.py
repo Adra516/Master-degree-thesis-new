@@ -6,7 +6,6 @@
                                      target: COARSE approach, FINE single-shot
                                      positioning, or one CORRECTion
 
-Ported near-verbatim from rework-attempt-1's scripts/navigation_node.py.
 Positioning measures the target through the world model (world_model_node.py)
 and moves the base through BaseController; the policy itself is approach.py.
 
@@ -26,10 +25,6 @@ import numpy as np
 import rospy
 import tf2_ros
 from sensor_msgs.msg import LaserScan
-
-# See arm_node.py's identical comment: roslaunch execs this file through a
-# devel/lib/ wrapper, so __file__'s own directory must be added explicitly
-# for the flat sibling imports below to resolve.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import approach
 from base_controller import BaseController
@@ -112,8 +107,15 @@ class NavigationNode:
                     approach.coarse(robot, req.standoff, req.table_near_x)
                     res.success = True
                     return res
-                step = approach.fine if req.mode == req.FINE else approach.correct
-                res.distance, res.bearing, res.target.x, res.target.y = step(robot, req.standoff)
+                if req.mode == req.FINE:
+                    # The safe-distance window is live-tunable so the standoff can be
+                    # moved for experiments (rosparam ~too_close_m / ~too_far_m).
+                    out = approach.fine(robot, req.standoff,
+                                        float(rospy.get_param("~too_close_m", approach.TOO_CLOSE)),
+                                        float(rospy.get_param("~too_far_m", approach.TOO_FAR)))
+                else:
+                    out = approach.correct(robot, req.standoff)
+                res.distance, res.bearing, res.target.x, res.target.y = out
                 res.success = True
             except approach.PositioningFailed as e:
                 rospy.logwarn("[nav] Positioning failed: %s", e.message)

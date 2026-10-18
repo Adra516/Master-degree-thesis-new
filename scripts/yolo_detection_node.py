@@ -10,9 +10,6 @@ import tf2_ros
 import tf2_geometry_msgs
 from geometry_msgs.msg import PointStamped
 
-# See arm_node.py's identical comment: roslaunch execs this file through a
-# devel/lib/ wrapper, so __file__'s own directory must be added explicitly
-# for the flat sibling import below (resolver.py) to resolve.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from resolver import ObjectCatalog, normalize
 
@@ -53,11 +50,9 @@ class _TunedBBox3DEstimator(BBox3DEstimator):
                         0.0225])            # orientation: ~0.15rad (~9deg) std
         return kf
 
-# Detections of these classes are always published (never filtered out by
-# target_classes below) — real-world obstacle/scene classes that matter
-# regardless of what's being picked. "person" is not in config/objects.yaml
-# (it's never a pick target), but a real person-shaped obstacle nearby still
-# has to reach the world model so it can be avoided.
+# Detections of these classes are always published
+# real-world obstacle/scene classes that matter
+# regardless of what's being picked.
 SCENE_CLASSES = {"dining table", "table", "person"}
 
 
@@ -66,24 +61,12 @@ class YoloDetectionNode:
     def __init__(self):
         self.robot_name = rospy.get_param("~robot_name",    "locobot")
         self.conf_thresh = float(rospy.get_param("~conf_threshold", 0.10))
-        # An explicit checkpoint (e.g. a fine-tuned model) overrides the stock
-        # COCO-pretrained one entirely — see ObjectDetector(weights_path=...).
-        # Previously declared in vision_nodes.launch but never actually read
-        # here, so it had no effect; now wired through.
         yolo_model_path = rospy.get_param("~yolo_model", "")
         self.process_rate = float(rospy.get_param("~process_rate", 2.0))
         target_object = rospy.get_param("~target_object", "bottle")
 
         # config/objects.yaml is the one place that maps a graspable object to
-        # its empirically-measured YOLO class label(s) — see that file's own
-        # header. Previously this node kept a SEPARATE, hand-maintained copy of
-        # that mapping (_ALIAS_MAP) plus an INDEPENDENT, separately-hand-
-        # maintained target_classes launch list (the actual publish filter,
-        # below) that had to be kept in sync with it by hand. Forgetting to add
-        # a newly-catalogued object's label to that second list silently
-        # dropped every detection of it before it was ever published — it then
-        # looked exactly like "not detected"/"never locks", with no error
-        # anywhere, because nothing downstream ever saw it at all.
+        # its empirically-measured YOLO class label(s)
         default_catalog = rospkg.RosPack().get_path("locobot_prog") + "/config/objects.yaml"
         catalog = ObjectCatalog.from_yaml(rospy.get_param("~catalog", default_catalog))
 
@@ -91,8 +74,7 @@ class YoloDetectionNode:
         if isinstance(raw_classes, str):
             raw_classes = ast.literal_eval(raw_classes)
         if raw_classes:
-            # Explicit override (e.g. quick ad hoc testing of a class not yet
-            # in the catalog) — used exactly as given.
+            # Explicit override — used exactly as given.
             self.target_classes = [c.lower() for c in raw_classes]
         else:
             # The normal case: every measured label of every catalogued
@@ -123,12 +105,10 @@ class YoloDetectionNode:
         if yolo_model_path:
             # Load an explicit checkpoint (e.g. a fine-tuned model) in place of
             # the stock one ObjectDetector just loaded, WITHOUT modifying
-            # detection_model.py itself — that file is third-party (YOLO3D,
-            # downloaded from its own creator), kept unmodified on request.
+            # detection_model.py itself 
             # ObjectDetector has no constructor hook for this, so this swaps
             # its public .model after construction and reapplies the same
             # overrides its own __init__ would have set for a stock load
-            # (conf/iou/agnostic_nms/max_det — see that file for the originals).
             self.detector.model = YOLO(yolo_model_path)
             self.detector.model.overrides['conf'] = self.conf_thresh
             self.detector.model.overrides['iou'] = 0.45
@@ -207,8 +187,7 @@ class YoloDetectionNode:
             # so a model whose own trained class names contain underscores (this
             # project's fine-tune: "tea_box", "can_coke") must be normalized the
             # SAME way here, or every detection of them silently fails the
-            # target_classes filter below and never gets published at all — found
-            # live deploying that fine-tune (detections_3d came back "[]").
+            # target_classes filter below and never gets published at all 
             class_name = normalize(self.detector.model.names[cls_id])
             if (self.target_classes
                     and class_name not in self.target_classes
@@ -243,16 +222,14 @@ class YoloDetectionNode:
             pos_base = self._to_base_frame(pos_cam, stamp, self.camera_frame, self.target_frame)
             if pos_base is None:
                 continue   # TF failed on this stamp — skip rather than publish wrong coords
-            # Camera-measured H and W; fall back to DEFAULT_DIMS only for L
+            # Camera-measured H and W; 
             if depth_m > 0:
                 fx  = self.K[0, 0];  fy = self.K[1, 1]
                 W_m = ((x2 - x1) / fx) * depth_m
                 H_m = ((y2 - y1) / fy) * depth_m
                 # Rotationally symmetric objects: depth extent = width.  Using the
                 # DEFAULT_DIMS class prior for L here (e.g. vase L=0.15 for a
-                # 0.06 m bottle) breaks the downstream symmetry check — the
-                # footprint looks elongated, yaw estimation runs, and the grasp
-                # gets a bogus ±60° gripper angle.
+                # 0.06 m bottle) breaks the downstream symmetry check
                 if class_name in ("bottle", "vase", "cup", "wine glass", "bowl"):
                     L_m = W_m
                 else:
@@ -267,8 +244,7 @@ class YoloDetectionNode:
             orientation = float(self.bbox3d._estimate_orientation([x1, y1, x2, y2], np.array(pos_cam), class_name))
 
             # Smooth position/size/orientation across frames for this tracked
-            # object (Kalman, then an EMA over its own recent history — see
-            # _TunedBBox3DEstimator above). Only possible with a stable
+            # object. Only possible with a stable
             # object_id from the tracker; an untracked detection is published
             # raw. Smooths position_base/dims_hwl/orientation only —
             # position_cam and depth_m stay the raw per-frame measurement,

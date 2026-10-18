@@ -142,38 +142,10 @@ def is_tapered(dims_hwl, grasp_axis):
 # The pre-grasp pose sits BACK from the grasp point along the approach axis, at
 # the SAME height the jaws will close at — the arm stops short of the object and
 # then moves straight in.  It never passes over the object at any point.
-#
-# This replaced an earlier "hover above the object, then descend vertically"
-# design.  That design needed a whole layer of machinery just to be safe — a
-# measured collision-box clearance ceiling, a second high staging pose to keep
-# the swing from sweeping over a tall object, and a separate conservative height
-# estimator to avoid flying into the object's top.  Approaching from the side at
-# grip height removes the reason all of it existed: there is no "top" to clear.
-#
-# Clearance now means horizontal room, not vertical: the standoff must sit
-# outside the target's padded collision box along the approach axis.  A typical
-# target's box half-extent is ~0.04-0.055 m (a 0.06-0.09 m footprint plus pad).
-# MoveIt enforces the rest for free — the approach is planned collision-aware
-# with the target still an obstacle, so a standoff that IS inside the box
-# simply fails to plan; the caller's retry on failure shrinks the offset
-# (moves closer), which only helps when the standoff was kinematically out of
-# reach, not when a scene obstacle is blocking an otherwise-reachable one.
-#
-# MEASURED live 2026-10-01: at the old 0.08 m, ~30% of pre-grasp approaches hit
-# this — every single one confirmed (same path re-planned with collisions OFF
-# -> 100%) to be the target's OWN box clipped mid-swing, never a kinematics
-# problem. compute_cartesian_path checks collision along the WHOLE interpolated
-# path from wherever the arm currently is, not just the destination, so even a
-# ~21 mm point-clearance margin at 0.08 m left room for the wrist/forearm to
-# graze the box partway through, depending on the exact start pose. Widened to
-# 0.10 m (~41 mm margin) — comfortably inside the already-measured reachability
-# budget below (0.321 rad of joint-limit margin at 0.10 m vs 0.384 at 0.08 m).
+
 TARGET_BOX_PAD = 0.01   # MUST match the motion node's _add_target_obstacle pad
 PREGRASP_STANDOFF_OFFSET = 0.10   # metres back along the approach axis
 # Air between the fingertips and the padded box face at the minimum offset.
-# ee_gripper_link is FK-MEASURED to be the furthest-forward link of the whole
-# gripper (nothing sticks out past it), so the offset is a fingertip clearance
-# and this margin is the real gap, not an approximation.
 PREGRASP_FACE_CLEAR = 0.010
 
 
@@ -209,12 +181,6 @@ def min_standoff_offset(dims_hwl):
 # execute_descent).  These turn a raw measurement into a go/no-go decision.
 # They live here, not in the motion node, so they stay importable without ROS
 # and can be unit-tested against the real measured numbers.
-#
-# SHARED RULE — a MISSING measurement passes.  The gates refuse poses that were
-# measured to be bad; they do not refuse poses that could not be measured at all
-# (diagnostics disabled, TF stalled, no object position supplied).  Failing
-# closed on a missing measurement would turn an instrumentation outage into a
-# total grasp outage, which is strictly worse than the pre-gate behaviour.
 
 def pregrasp_verdict(meas, pos_tol_mm, ori_tol_deg):
     """Did the manipulator actually reach the commanded pre-grasp pose?
@@ -237,15 +203,7 @@ def pregrasp_verdict(meas, pos_tol_mm, ori_tol_deg):
     return True, f"ok ({err:.1f}mm, {ori:.1f}°)"
 
 
-# How much of the free room each side of the object the arrival may use up. With a
-# 56 mm jaw gap and a 33 mm neck there are 11.4 mm per side; a pad that lands on
-# the neck interpenetrates it (kp=1e6 contact), and the depenetration burst is
-# what throws the bottle and spins the weak forearm_roll. Measured 2026-10-13 on
-# three bottle descents that arrived 10-25 mm off-centre: the old test only asked
-# whether the object's centre lay between the fingertips (|along| < 28 mm), and
-# passed -10.1 and +14.8 mm; both ended with the bottle thrown. Every descent
-# within +-2.6 mm was fine. 3/4 of the room leaves 8.5 mm for the bottle and 4.0 mm
-# for a 45 mm box, with the observed good arrivals (<= 2.6 mm) well inside both.
+# How much of the free room each side of the object the arrival may use up.
 CONTACT_ROOM_FRACTION = 0.75
 
 
@@ -324,17 +282,6 @@ def centring_shift(metrics, miss_tol_mm, width_mm, room_fraction=CONTACT_ROOM_FR
 
 
 # ── Is the object actually still between the fingers? ────────────────────────
-# Measured over 10 fresh-launch bottle picks (2026-10-13, ground truth): get_object
-# reported success on 7 and NOT ONE held cleanly for 30 s. Every empty-gripper
-# outcome among them had the same finger signature, so this is not a guess:
-#   fingers at their commanded target (23.0 vs 22.6, 17.6 vs 22.6, 14.5 vs 22.4 mm)
-#   — an object, however tight, stops them SHORT of a target set inside its width;
-#   a finger reading past its own 37 mm limit (64 mm: the bottle thrown through
-#   the jaws); fingers fully open (37.1 mm) with success still reported.
-# A held bottle stalled 3.4-5.3 mm short of its target (28.1/24.3, 27.1/22.7,
-# 28.5/23.2; tea box 30.5/27.1, can 31.9/27.3), and a grip that later let go
-# showed the fingers snapping inward 10+ mm in 0.2 s.
-#
 # The margin below is set from the two clusters actually observed, with a gap
 # between them: bottle-gone outcomes rested within 0.4-1.0 mm of the target
 # (23.0/22.6, 24.4/23.4 in the user's own run, 23.5/22.6 with the bottle on the

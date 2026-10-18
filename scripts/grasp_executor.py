@@ -31,21 +31,15 @@ from arm_actuators import ARM_JOINTS, CAMERA_CLEAR_POSE, GRASP_READY_POSE
 from gain_scheduler import GainScheduler
 from grasp_geometry import FINGER_CLOSE, FINGER_OPEN
 
-# Gate tolerances. Read LIVE (live_param), so `rosparam set ~<name> <v>` takes
-# effect without relaunching — which is how a gate is relaxed or disabled
-# mid-evaluation.
+# Gate tolerances. 
 PREGRASP_POS_TOL_MM = 15.0
 PREGRASP_ORI_TOL_DEG = 10.0
 CONTACT_MISS_TOL_MM = 15.0
 # A pending pre-grasp older than this is refused by grasp() — the arm may have
 # sagged and the scene/target may no longer be what was verified.
 PENDING_GRASP_TTL_S = 30.0
-# Validated distance window for the target, in base_link. Too far (> 0.52):
-# kinematically unreachable. Too close (< 0.33): the STANDOFF, not the target,
-# runs out of arm — it sits the standoff offset nearer still (0.33 -> r=0.25),
-# and the measured joint-limit margin for a level gripper collapses as the arm
-# retracts (0.384 rad at r=0.36 -> 0.181 at r=0.28).
-REACH_MAX = 0.52
+# Validated distance window for the target, in base_link.
+REACH_MAX = 0.55   # grasp-point distance; the park window is 0.49-0.53 (world_model_node PARK_GRASP_*)
 REACH_MIN = 0.33
 
 # The WidowX-250s wrist (forearm_roll, wrist_angle, wrist_rotate) is spherical:
@@ -78,13 +72,7 @@ RELEASE_STEPS = 6
 PLACE_CLEARANCE = 0.005
 
 # A close command that moves the fingers less than this counts as a STALL, not
-# a shallow-but-real grip on a wide object — see _do_descent's stall gate.
-# gazebo_grasp_fix welds on ANY two-roughly-opposing-direction contact within
-# 100ms (grip_count_threshold=1 @ 20Hz — see urdf/grasp_fix.urdf.xacro), with
-# no regard to commanded finger position. The jaws travel OPEN around the
-# object during descent (this module's own docstring already documents one
-# incident of this attaching with no close command at all, dragging the
-# object 254mm); a near-square object's corner can graze a pad during that
+# a shallow-but-real grip on a wide object. a near-square object's corner can graze a pad during that
 # approach and weld before the deliberate squeeze ever acts, after which
 # further closing just fights an already-rigid joint. Every legitimate
 # shallow grip measured live moved >= 5mm; the one confirmed stall case
@@ -92,13 +80,7 @@ PLACE_CLEARANCE = 0.005
 # moved 1mm.
 MIN_CLOSE_TRAVEL_MM = 3.0
 # How long to keep watching the fingers, arm still, AFTER the lift before
-# reporting the object held (live-tunable `hold_verify_s`; 0 disables). Measured
-# 2026-10-13 over 10 fresh bottle picks: of the grasps that lifted cleanly, the
-# grip let go 3.9 s, 10.6 s and 18.8 s later — each beginning with both fingers
-# snapping inward 10+ mm in 0.2 s while the arm sat still. Reporting success at
-# the instant the lift ends (the old behaviour) was true for all of them and
-# false by the time anything used it. This window catches the early ones; the
-# 19 s one needs a longer window than is worth adding to every pick.
+# reporting the object held (live-tunable `hold_verify_s`; 0 disables).
 HOLD_VERIFY_S = 8.0
 
 
@@ -157,13 +139,7 @@ class GraspExecutor:
         can re-position the base and try again. Returns (ok, info).
         """
         # Safety net: if the previous pick's grasp() applied a load (gains.apply_load())
-        # but the caller then skipped place() — e.g. world_model_node's "gripper closed
-        # but nearly empty" branch, which retracts without ever calling place() — the
-        # loaded gains would otherwise stay applied indefinitely. Every pick starts
-        # with a pregrasp(), so releasing here guarantees convergence regardless of what
-        # the previous attempt's caller decided. Harmless no-op while the object is
-        # genuinely still held (release() just republishes the same tuned baseline);
-        # currently a no-op regardless, since LOAD_GAIN_DELTA is empty (see gain_scheduler.py).
+        # but the caller then skipped place()
         self.gains.release()
         self.table_surface_z = table_z
         x, y = plan["grasp_point"][0], plan["grasp_point"][1]
@@ -408,11 +384,6 @@ class GraspExecutor:
         """
         info = dict(info or {})
         gw_m = self.gripper.position
-        # "Partially closed" only counts as a grasp when WE closed it. Measured
-        # 2026-10-14: the contact gate refused to close (jaws 24 mm off along the
-        # approach) after the jaws had already grazed the bottle and welded it, the
-        # fingers sat at 29.7 mm, and this rule reported success with the bottle
-        # hanging tilted off the gripper. No close was ever commanded.
         closed_by_us = "close_target_m" in info
         gripper_closed_on_object = (
             closed_by_us
@@ -484,14 +455,6 @@ class GraspExecutor:
         p.orientation = ori
         frac = 0.0
         for attempt in (1, 2):
-            # Same reasoning as _do_descent's own call to this (see its comment):
-            # cheapest safe place to catch a wrist that's drifted onto the far
-            # branch before it can carry that into THIS leg. Never applied here
-            # before — live-observed 2026-10-07: repeated ~140mm pre-grasp
-            # misses where the measured EE stayed pinned at GRASP_READY_POSE's
-            # own FK position regardless of the commanded standoff, i.e. the
-            # arm never moved at all — consistent with compute_cartesian_path
-            # seeding from a flipped current state and finding ~0% coverage.
             self._unwind_wrist_if_flipped()
             plan, frac = self.move_group.compute_cartesian_path([p], 0.005, True)
             if frac >= 0.80:

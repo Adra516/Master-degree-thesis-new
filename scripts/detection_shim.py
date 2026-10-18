@@ -2,13 +2,6 @@
 """detection_shim — bridges yolo_detection_node.py's JSON detections into the
 typed DetectionArray world_model_node expects.
 
-NOT a rework-attempt-1 file — that branch's world_model_node assumed
-yolo_detection_node.py itself published DetectionArray natively. Porting
-yolo_detection_node.py was explicitly ruled out (it's the one perception node
-everything currently depends on, and touching the live production path was
-the higher-risk option); this shim exists instead so that node stays
-completely untouched.
-
 Also the ONE place, by deliberate design, that keeps a real capability the
 rework's own ported code silently dropped: task_orchestrator_node.py never
 calls anything equivalent to locobot_geometry.estimate_grasp_orientation
@@ -37,10 +30,6 @@ import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
-
-# See arm_node.py's identical comment: roslaunch execs this file through a
-# devel/lib/ wrapper, so __file__'s own directory must be added explicitly
-# for the flat sibling imports below to resolve.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from conversions import detection_to_msg
 from locobot_geometry import estimate_grasp_orientation

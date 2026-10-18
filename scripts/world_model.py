@@ -20,10 +20,7 @@ from zones import (ARM_GRASP_DIST, GRIPPER_W_M, classify_zone, compute_grasp,
 from resolver import normalize
 from world_table import TableEstimate
 
-# Size calibration uses only frames taken from at least this far away: MEASURED
-# that both the bbox height and the centre-derived estimate get WORSE closer in
-# (the centre one 33-62% over true in the 0.40-0.55 m band), so a size locked in
-# from farther away beats re-deriving a worse one at the grasp standoff.
+# Size calibration uses only frames taken from at least this far away
 DIM_CALIB_MIN_DIST = 0.47
 DIM_CALIB_MIN_SAMPLES = 3
 DIM_CALIB_WINDOW = 20

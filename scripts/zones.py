@@ -1,16 +1,5 @@
 """Scene geometry: parse detections, find what blocks the approach, classify
 the approach zone, and summarise the scene for the VLM. Pure: no ROS.
-
-Ported near-verbatim from rework-attempt-1's src/locobot_prog/geometry/
-zones.py ("moved from scripts/locobot_geometry.py. The bird's-eye renderer is
-now world/bev.py"), verified against locobot_geometry.py constant-for-constant
-before porting. render_birdseye moved on to world_bev.py; everything from
-locobot_geometry.py this file didn't take over (parse_object, find_blocking,
-classify_zone, compute_grasp, build_summary) was later deleted there as dead
-code once its only caller, vlm_agent_node.py, was retired — this file and
-world_bev.py are their sole surviving copies. locobot_geometry.py itself
-still exists, trimmed down to its one other survivor, estimate_grasp_
-orientation, which detection_shim.py calls directly.
 """
 
 import math

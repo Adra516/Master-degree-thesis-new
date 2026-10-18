@@ -2,8 +2,7 @@
 """agent_repl — terminal client for vlm_agent_node's run_task service.
 
 Each line typed in is one task, sent to /{ns}/agent/run_task and run to
-completion by the VLM tool-use loop (get_object / inspect_object / navigate_to
-/ update_plan — see vlm_agent_node.py's SYSTEM_PROMPT). Tasks share ONE ongoing
+completion by the VLM tool-use loop. Tasks share ONE ongoing
 conversation inside vlm_agent_node (never reset), so a later task can refer
 back to what an earlier one found — this script is just a thin front end for
 that service call, not a conversation of its own.

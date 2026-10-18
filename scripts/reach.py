@@ -1,9 +1,6 @@
 """Inverse reachability: where the base should stand so the arm is comfortable.
 
-Ported near-verbatim from rework-attempt-1's src/locobot_prog/geometry/
-reach.py ("moved from the VLM agent") — same ARM_LIMITS, STANDOFF_MIN/MAX/STEP,
-APPROACH_SAMPLES, PLATEAU_WEIGHT as the retired vlm_agent_node.py's
-_reach_optimal_standoff/_ik/_joint_margin. This is a relocation, not new
+This is a relocation, not new
 capability: ARM_LIMITS is still a hardcoded dict here, same as before — the
 "derive reach from the URDF at startup" idea from the original refactor brief
 was never actually implemented, and stays a genuinely open item, independent
@@ -29,9 +26,10 @@ ARM_LIMITS = {
     "wrist_angle":  (-1.745, 2.147),
     "wrist_rotate": (-3.142, 3.142),
 }
-# Candidate standoffs. The 0.47 cap keeps the realised distance (within the
-# positioning dead-band of +-0.03) under the arm node's 0.52 m reach abort.
-STANDOFF_MIN, STANDOFF_MAX, STANDOFF_STEP = 0.44, 0.47, 0.01
+# Candidate standoffs. 0.49-0.51 (was 0.44-0.47): parked nearer, the base is still
+# upright at the pre-grasp and flips during the straight-in leg, knocking a tall object
+# (see world_model_node.py, BASE TILT FLIP). The arm's reach abort is 0.55 m.
+STANDOFF_MIN, STANDOFF_MAX, STANDOFF_STEP = 0.49, 0.51, 0.01
 APPROACH_SAMPLES = 3     # points sampled from standoff to grasp point (inclusive)
 PLATEAU_WEIGHT = 0.25    # weight on the mean margin of the +-1 neighbour standoffs
 

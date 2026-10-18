@@ -198,18 +198,6 @@ def test_inspect_offsets_floor_and_unknown_height_fallback():
     assert wmn.inspect_offsets_for(-0.1) == full
 
 
-def test_pretip_clear_uses_the_height_it_reaches_over_the_object():
-    """Neighbours' boxes top out at ~0.385 m. A tea box / can grasp at z~0.33 used to
-    be excluded because its GRASP height is below that; the over-the-top reach goes
-    to ~0.45-0.5 m, which is clear."""
-    obstacles = [_box("ball", 0.48, -0.15), _box("tea_box", 0.45, 0.22)]
-    for o in obstacles:
-        o.center.z, o.size.z = 0.31, 0.15          # top 0.385
-    assert wmn.TaskOrchestrator._pretip_clear(0.49, obstacles)       # tea box reach height
-    assert not wmn.TaskOrchestrator._pretip_clear(0.40, obstacles)   # would be too close
-    assert wmn.TaskOrchestrator._pretip_clear(0.33, [])
-
-
 def test_inspect_offsets_scale_down_for_a_taller_object():
     """Regression for the live-observed run-to-run bottle instability with no
     obstacle involved: wrist_rotate tilts (not spins) a side-gripped object,
@@ -237,18 +225,6 @@ def test_inspect_offsets_floor_and_unknown_height_fallback():
     assert wmn.inspect_offsets_for(None) == full
     assert wmn.inspect_offsets_for(0.0) == full
     assert wmn.inspect_offsets_for(-0.1) == full
-
-
-def test_pretip_only_swings_when_the_jaws_are_above_every_neighbour():
-    """The pre-tip swing is a joint move with no collision check. Measured scene:
-    neighbours' boxes top out at ~0.385 m (ball/tea box). A bottle neck grasp at
-    0.478 m is clear; a can or tea-box grasp at ~0.336 m is below their tops."""
-    obstacles = [_box("ball", 0.48, -0.15), _box("tea_box", 0.45, 0.22)]
-    for o in obstacles:
-        o.center.z, o.size.z = 0.31, 0.15          # top 0.385
-    assert wmn.TaskOrchestrator._pretip_clear(0.478, obstacles)
-    assert not wmn.TaskOrchestrator._pretip_clear(0.336, obstacles)
-    assert wmn.TaskOrchestrator._pretip_clear(0.336, [])   # nothing around: free to swing
 
 
 if __name__ == "__main__":

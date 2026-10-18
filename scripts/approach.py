@@ -36,7 +36,7 @@ COARSE_TOL = math.radians(1.5)    # face the target when off by more (above bear
 REOPEN_TOL = math.radians(6.0)    # only a real veer earns the one verify-step heading trim
 DIST_TOL = 0.03                   # distance dead-band around the standoff
 TOO_CLOSE = 0.40                  # closer: the arm's swing clips the object
-TOO_FAR = 0.50                    # farther: the arm node aborts at 0.52 m
+TOO_FAR = 0.54                    # farther: the arm node aborts at 0.55 m
 TABLE_ROBOT_MARGIN = 0.12         # coarse drives keep this far from the table edge
 COARSE_FACE_TOL = math.radians(3.0)
 COARSE_TURN_SPEED = 0.30          # rad/s
@@ -80,7 +80,7 @@ def coarse(robot, standoff, table_near_x):
         robot.drive_straight(drive_m, COARSE_DRIVE_SPEED)
 
 
-def fine(robot, standoff):
+def fine(robot, standoff, too_close=TOO_CLOSE, too_far=TOO_FAR):
     """GO (face once, drive once) -> VERIFY (one heading trim only on a genuine
     veer, one distance correction) -> DECISION. Returns (dist, angle, tx, ty) of
     the final measurement. Raises PositioningFailed."""
@@ -113,21 +113,21 @@ def fine(robot, standoff):
 
     # DECISION — proceed if the standoff is in the arm's safe window; the waist
     # pre-rotation absorbs the heading residual.
-    if dist < TOO_CLOSE:
+    if dist < too_close:
         robot.log("Positioned TOO CLOSE (%.2fm) — backing up", dist)
         for _ in range(2):
             robot.drive(dist - standoff)         # negative: away from the target
             tx, ty = robot.measure()
             dist, angle = math.hypot(tx, ty), math.atan2(ty, tx)
             robot.log("After back-up: dist=%.2fm", dist)
-            if dist >= TOO_CLOSE:
+            if dist >= too_close:
                 break
-        if dist < TOO_CLOSE:
+        if dist < too_close:
             raise PositioningFailed(
                 f"Still too close to the target ({dist:.2f}m) after backing up — the arm "
                 f"cannot reach it without knocking it over. Move the base back and retry.",
                 too_close=True)
-    elif dist <= TOO_FAR:
+    elif dist <= too_far:
         robot.log("Positioned (single-shot): dist=%.2fm heading=%.1f° — waist compensates "
                   "the rest", dist, math.degrees(angle))
     else:

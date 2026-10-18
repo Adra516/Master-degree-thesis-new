@@ -1,9 +1,6 @@
 # Object catalogue: which detector labels can be the object the user names.
 #
-# Replaces the hardcoded _ALIAS_MAP in yolo_detection_node.py (that node is
-# untouched; the catalogue is consumed by detection_shim.py/world_model.py,
-# which decide target identity independently). Adding an object means adding
-# an entry here, not editing code.
+# Replaces the hardcoded _ALIAS_MAP in yolo_detection_node.py
 #
 #   names        what a user (or the VLM) may call it; matched case-insensitively,
 #                spaces/underscores ignored. The key itself always counts.
@@ -32,20 +29,6 @@
 #
 # Units: metres.
 #
-# 2026-10-03: yolo_labels for all 5 catalogued objects (bottle/tea_box/
-# can_coke/ball/table) switched from measured COCO aliases to the objects'
-# own real names. This project now runs a model fine-tuned on these 5
-# objects directly (vision_nodes.launch's yolo_model), which reports them as
-# themselves instead of guessing the nearest COCO class it half-recognises
-# them as. table was added second (a separate retrain, finetune2, after the
-# first 4-class finetune1 shipped without it — the detection head's size is
-# fixed per training run, so adding a class needs a fresh fine-tune, not a
-# resume) specifically because losing "dining table" detection meant losing
-# general scene-obstacle awareness of it; now restored, and
-# world_table.py's TableEstimate gets real detections again instead of only
-# ever taking its "never seen the table" fallback path. "person" is still
-# NOT a trained class (no person model exists in this project's worlds) —
-# that gap remains, should one ever be added to a scene.
 version: 1
 
 objects:
@@ -71,8 +54,7 @@ objects:
   ball:
     # Reshaped into an upright capsule (models/ball_capsule) so the jaws can
     # take it from the side; the fine-tuned model was trained on frames of
-    # this capsule shape directly (collect_training_data.py), unlike the old
-    # COCO alias which was never re-checked on the new shape.
+    # this capsule shape directly -> not tested
     names: [ball, sports ball]
     yolo_labels: [ball]
     round: true
@@ -81,9 +63,5 @@ objects:
   table:
     role: surface
     names: [table, dining table]
-    # 2026-10-03: the fine-tune now includes the table as a 5th trained class
-    # (719 auto-labeled frames of it; held-out validation mAP50-95 0.995 —
-    # the single best-performing class of the five), so this is now also the
-    # model's own real label, same as the other 4 — not the old COCO alias.
     yolo_labels: [table]
     size: {x: 0.40, y: 0.80, z: 0.25}

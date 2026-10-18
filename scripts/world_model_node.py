@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """world_model_node — the world model AND the pick-and-place sequence.
 
-Two classes in one process (see the merge note below), ported near-verbatim
-from rework-attempt-1's scripts/world_model_node.py + scripts/
-task_orchestrator_node.py:
+Two classes in one process, ported near-verbatim
+from rework-attempt-1's scripts/world_model_node.py + scripts/task_orchestrator_node.py:
 
   WorldModelNode (~world_model/...):
     ~get_scene      (GetScene)      objects, target, what blocks it, zone,
@@ -15,22 +14,6 @@ task_orchestrator_node.py:
   TaskOrchestrator (/task/...):
     /task/get_object   (GetObject)   observe -> navigate -> pregrasp -> grasp -> place
     /task/navigate_to  (NavigateTo)  observe -> navigate, stop in front of the object
-
-WHY MERGED, NOT TWO PROCESSES (the plan's RAM cap): rework-attempt-1 ran these
-as separate nodes; merging them back recovers the typed-service interface
-without paying for a third extra process (see the Step 3/4 commit messages
-for the measured RAM cost per process on this machine). Confirmed mechanically
-clean before merging (Explore pass, step 3): disjoint import graphs, no shared
-mutable globals, different-purpose locks that don't deadlock.
-
-The ONE thing the merge requires: TaskOrchestrator's services were registered
-`~`-relative (rospy.Service("~get_object", ...)), which resolves under
-whichever single node name this process ends up with — under "world_model"
-that would silently become /locobot/world_model/get_object instead of
-/locobot/task/get_object. Fixed here by registering them with explicit
-absolute names instead, so external callers (vlm_agent_node.py,
-tools/e2e_sim.sh-equivalents) can still find them at the path the original
-two-process design used.
 
 Try either half with nothing else running:
   rosservice call /locobot/world_model/get_scene "{target_name: 'tea box', include_bev: false}"
@@ -55,10 +38,6 @@ from geometry_msgs.msg import Point, PoseStamped, Vector3, PointStamped
 from moveit_msgs.srv import GetPositionIK, GetPositionIKRequest
 from sensor_msgs.msg import CameraInfo, Image, JointState
 from std_msgs.msg import Float64
-
-# See arm_node.py's identical comment: roslaunch execs this file through a
-# devel/lib/ wrapper, so __file__'s own directory must be added explicitly
-# for the flat sibling imports below to resolve.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import footprint
 import grasp_geometry as gg
@@ -78,7 +57,7 @@ from world_model import WorldModel
 from zones import ARM_GRASP_DIST, TABLE_DEPTH_M, ZONE_BLOCKED, ZONE_GRASP_READY
 from locobot_prog.msg import CollisionBox, DetectionArray, TargetState
 from locobot_prog.srv import (ApproachTarget, ApproachTargetRequest,
-                              ApproachTargetResponse, ExecuteGrasp, ExecutePlace,
+                              ApproachTargetResponse, DriveRelative, ExecuteGrasp, ExecutePlace,
                               ExecutePregrasp, GetObject, GetObjectResponse,
                               GetScene, GetSceneResponse, GetTarget,
                               GetTargetResponse, InspectObject, InspectObjectResponse,
@@ -90,11 +69,8 @@ from locobot_prog.srv import (ApproachTarget, ApproachTargetRequest,
 # The grasp point trusts a target lock at most this old (positioning uses 2 s):
 # the robot has been standing still since it aligned.
 GRASP_MAX_LOCK_AGE = 3.0
-# After a camera tilt command: the head settles and perception delivers frames
-# of the new view before anything reads the target again.
 TILT_SETTLE_S = 2.0
-# Before planning the grasp: how long to wait for a frame that contains the
-# target, so the depth planner can measure it (tries x seconds).
+# how long to wait for a frame that contains the target, so the depth planner can measure it 
 IN_FRAME_WAIT_TRIES = 10
 IN_FRAME_WAIT_S = 0.4
 # A grasp counts as holding the object above this measured finger position.
@@ -102,20 +78,17 @@ IN_FRAME_WAIT_S = 0.4
 # is worth re-taking the pre-grasp for (see TaskOrchestrator._settled_shift).
 SHIFT_FOLLOW_XY_MM = 10.0
 
-# PRE-TIP (rosparam ~pretip_enable, default FALSE: the user wants the pre-grasp to happen and
-# finish IN FRONT of the grasp point, not above the target; kept as an opt-in experiment). The base rests either
-# upright (~2.1 deg) or leaning forward on its stop (~5.2 deg); it flips forward when
-# the arm's shoulder passes about -0.69 rad and stays there until the arm is almost
-# fully retracted (shoulder ~-1.15). Measured 2026-10-14 (8/8 fresh launches): when the
-# base is still upright at the standoff (shoulder ~-0.80, tilt check dz ~0), it flips
-# 41-64% of the way through the straight-in leg, the object then moves ~20 mm up and
-# ~25 mm toward the jaws relative to the arm, and the jaws hit the bottle's shoulder
-# (6/8 gate refusals, 4/8 bottles knocked 90-150 mm). Runs where the base had already
-# flipped at the first pre-grasp (tilt check dz +22..+27) arrive cleanly. So: when the
-# tilt check shows no height shift, rise above the object's top, reach forward OVER
-# it until the base flips, and come straight back down to the same standoff (the user
-# did not want the earlier version's sideways waist swing: the arm should stay in
-# front of the target). The descent's re-aim then absorbs the shift the flip caused.
+# BASE TILT FLIP. The base rests either upright (~2.1 deg) or leaning forward on its
+# stop (~5.2 deg); it flips forward when the arm's shoulder passes about -0.69 rad and
+# stays there until the arm is almost fully retracted (shoulder ~-1.15). With the old
+# 0.44-0.47 m park the grasp point sat ~0.42 m out, the base was still upright at the
+# standoff and flipped 1.5-2.2 s into the straight-in leg, just as the pads reached the
+# neck: the end effector dropped ~20 mm, lunged ~25 mm, and the jaws knocked the bottle
+# (2026-10-17, 5/5 descents refused at the contact gate, 4/5 bottles knocked over).
+# With the grasp point ~0.50 m out the base flips during the FIRST pre-grasp instead,
+# the tilt re-take measures it (+26 mm) and the leg starts on an already-flipped base
+# (2026-10-18: 2/2 clean lifts when parked there). See PARK_GRASP_* below. The earlier
+# over-the-top "pre-tip" was removed 2026-10-17: it ended the pre-grasp above the target.
 # DEFAULT 0 again (2026-10-14 evening). Allowing 40 deg did give the right 45 mm width
 # for a turned tea box, but a yawed gripper at the standoff is hard for this arm (the
 # approach must be realised with forearm_roll/wrist_rotate at a near-zero wrist angle):
@@ -133,19 +106,17 @@ SHIFT_FOLLOW_XY_MM = 10.0
 # 45 deg where the other face pair takes over.
 GRASP_MAX_AXIS_DEV_DEG = 0.0
 
-PRETIP_UNTIPPED_DZ_M = 0.008   # |dz| below this at the tilt check = base still upright
-PRETIP_LIFT_M = 0.08           # minimum rise above the standoff before reaching forward
-PRETIP_TOP_CLEAR_M = 0.12      # end-effector frame this far above the object's top while reaching
-                               # over it: at 0.06 the gripper's lower parts plus the ~20 mm drop of
-                               # the flip itself hit the bottle 3/3 (ground truth)
-PRETIP_REACH_M = 0.12          # forward reach over the object (EE x ~0.43, past its centre)
-PRETIP_SETTLE_S = 1.5          # let the base finish flipping before reaching back
-PRETIP_MOVE_S = 3.5            # slow: a 2 s swing/reach shoved the base 30-55 mm sideways
-PRETIP_MIN_FLIP_DZ_M = 0.015   # after a pre-tip the object must have risen this much, else
-                               # the flip was partial (measured: +7 mm, finished mid-leg)
-PRETIP_REAIM_MAX_MM = 65.0     # the descent re-aim limit for THIS pick after a flip: the flip
-                               # plus the swing move the object 40-49 mm (45 refused one)
-PRETIP_CLEARANCE_M = 0.05      # the over-the-top reach must be this far above every neighbour's top
+RETAKE_REAIM_MAX_MM = 65.0     # the descent re-aim limit (/arm/reaim_max_mm) for a pick whose
+                               # tilt-corrected pre-grasp was blocked and fell back to the original
+                               # standoff: the descent must follow the whole tilt shift (40-49 mm
+                               # measured; the default limit refused one at 45)
+# Where the base must be parked, judged from the DEPTH PLANNER's grasp point (the
+# navigation estimate was 4-6 cm off in both directions, 2026-10-18): closer than MIN,
+# the base is still upright at the standoff and flips during the straight-in leg (see
+# BASE TILT FLIP above); farther than MAX, past the arm's reach check.
+PARK_GRASP_MIN_M = 0.49
+PARK_GRASP_MAX_M = 0.53
+PARK_GRASP_TARGET_M = 0.505
 GRIP_HELD_MIN_WIDTH = 0.015
 
 # inspect_object's rotation sweep: offsets (rad) from the wrist_rotate value the
@@ -326,9 +297,7 @@ class WorldModelNode:
         dims = dims_hwl_from_size(s) if (s.x > 0 and s.y > 0 and s.z > 0) else None
         centre = (req.position.x, req.position.y)
         radius = gp.cut_radius(dims)
-        # The table the caller assumed is a constant; the one the camera sees is
-        # what the jaws must clear, so measure it (footprint.table_height) and plan
-        # in heights above THAT. Falls back to the caller's when it cannot be seen.
+        # The table the caller assumed is a constant. Falls back to the caller's when it cannot be seen.
         table_z = req.table_z
         measured = footprint.table_height(depth, req.bbox, self.K, T, centre, radius, req.table_z)
         if measured is not None:
@@ -536,6 +505,7 @@ class TaskOrchestrator:
         self.target_memory = proxy("world_model/target_memory", TargetMemory)
         self.plan_grasp = proxy("world_model/plan_grasp", PlanGrasp)
         self.approach = proxy("navigation/approach_target", ApproachTarget)
+        self.drive_relative = proxy("navigation/drive_relative", DriveRelative)
         self.set_arm_pose = proxy("arm/set_arm_pose", SetArmPose)
         self.execute_pregrasp = proxy("arm/execute_pregrasp", ExecutePregrasp)
         self.execute_grasp = proxy("arm/execute_grasp", ExecuteGrasp)
@@ -543,22 +513,14 @@ class TaskOrchestrator:
         self.set_joint = proxy("arm/set_joint", SetJoint)
         self.shift_arm = proxy("arm/shift_arm", ShiftArm)
 
-        # Held-object state: get_object sets this on a successful grasp and
-        # refuses a second pick while it is set; inspect_object is the only way
-        # to clear it (it always places, win or lose, so this can never get
-        # stuck holding a reference to an object no longer actually held).
+        # Held-object state
         self._held = None
-        # Raw colour frames, for inspect_object's view captures. Independent of
-        # WorldModelNode's own depth subscriber (different purpose, different
-        # class) — same camera/color/image_raw topic vlm_agent_node already
-        # subscribes to for its own live frame, just a second, unrelated
-        # subscription.
+        # Raw colour frames, for inspect_object's view captures.
         self._latest_color = None
         rospy.Subscriber(f"/{ns}/camera/color/image_raw", Image,
                          self._on_color, queue_size=1, buff_size=2 ** 24)
 
-        # MoveIt IK, only to CHOOSE the standoff (inverse reachability). Optional:
-        # without it the default standoff is used.
+        # MoveIt IK, only to CHOOSE the standoff (inverse reachability). Optional: without it the default standoff is used.
         self._joint_state = None
         rospy.Subscriber(f"/{ns}/joint_states", JointState, self._on_joint_state, queue_size=1)
         self._ik_srv = None
@@ -569,11 +531,7 @@ class TaskOrchestrator:
         except rospy.ROSException:
             rospy.logwarn("[task] compute_ik unavailable — using fixed grasp_dist")
 
-        # Camera tilt, by range. Measured in Gazebo: from the standoff the 25 cm
-        # bottle fills 413 of the 480 image rows, so only a tilt near 0.45 rad
-        # shows it whole (0.35 cuts its base, 0.55 its top) — and the 8-9 cm tea
-        # box and can sit below the frame entirely at 0.35. From the start pose
-        # 0.35 is the better view (0.45 puts the bottle's top on the frame edge).
+        # Camera tilt, by range.
         self.tilt_far = float(rospy.get_param("~camera_tilt_far", 0.35))
         self.tilt_near = float(rospy.get_param("~camera_tilt_near", 0.45))
         self._tilt = None
@@ -634,59 +592,6 @@ class TaskOrchestrator:
         if r.ok:
             self._ref_point = (r.position.x, r.position.y, r.position.z)
         return r
-
-    def _ref_shift(self):
-        """(dx, dy, dz) of the odometry-held target since it was measured, in the
-        CURRENT base frame, with no verdict applied — or None."""
-        if self._ref_point is None:
-            return None
-        mem = self.target_memory(action=TargetMemoryRequest.REPROJECT)
-        if not mem.ok:
-            return None
-        return (mem.position.x - self._ref_point[0], mem.position.y - self._ref_point[1],
-                mem.position.z - self._ref_point[2])
-
-    @staticmethod
-    def _pretip_clear(raised_z, obstacles):
-        """Is the end-effector, at the height it reaches OVER the object, above every
-        neighbour's top? (It was checked at the GRASP height, a leftover of the
-        sideways swing; the over-the-top reach never goes near the neighbours, but
-        that rule silently kept the can and the tea box from ever pre-tipping, so
-        a base that was still upright flipped mid-leg: 18:38 can run, +18 mm.)"""
-        tops = [o.center.z + o.size.z / 2.0 for o in obstacles]
-        return raised_z - max(tops, default=0.0) >= PRETIP_CLEARANCE_M
-
-    def _pretip(self, target_top_z, ee_z, approach_yaw, reach=None):
-        """Flip the base onto its forward stop while staying IN FRONT of the object:
-        rise from the standoff to above the object's top, reach forward over it until
-        the base flips, then come straight back and down to the same standoff (see
-        PRETIP_* above). Returns True if the forward reach executed. Uses only the
-        existing arm services; never raises."""
-        if reach is None:
-            reach = float(rospy.get_param("~pretip_reach_m", PRETIP_REACH_M))
-        try:
-            # The arm is at the verified standoff: the grasp height, facing along the
-            # plan's approach direction (a level gripper's yaw).
-            up = max(PRETIP_LIFT_M, target_top_z + PRETIP_TOP_CLEAR_M - ee_z)
-            dx, dy = reach * math.cos(approach_yaw), reach * math.sin(approach_yaw)
-            rospy.loginfo("[task] Pre-tip: base still upright at the standoff — rising %.0f mm "
-                          "above the object's top and reaching %.0f mm forward over it to "
-                          "flip it", up * 1000, reach * 1000)
-            r = self.shift_arm(dx=0.0, dy=0.0, dz=up, move_time=PRETIP_MOVE_S)
-            if not r.success:
-                rospy.logwarn("[task] Pre-tip: rise failed (%s)", r.message)
-                return False
-            out = self.shift_arm(dx=dx, dy=dy, dz=0.0, move_time=PRETIP_MOVE_S)
-            rospy.sleep(PRETIP_SETTLE_S)
-            if out.success:
-                self.shift_arm(dx=-dx, dy=-dy, dz=0.0, move_time=PRETIP_MOVE_S)
-            else:
-                rospy.logwarn("[task] Pre-tip: forward reach failed (%s)", out.message)
-            self.shift_arm(dx=0.0, dy=0.0, dz=-up, move_time=PRETIP_MOVE_S)
-            return bool(out.success)
-        except rospy.ServiceException as e:
-            rospy.logwarn("[task] Pre-tip failed: %s", e)
-            return False
 
     def _settled_shift(self):
         """How far the target has moved in the CURRENT base frame since the plan
@@ -913,7 +818,11 @@ class TaskOrchestrator:
         st = self.get_target(target_name=target_name).state
         dims = (dims_hwl_from_size(st.lock_size) if st.locked
                 else dims_hwl_from_size(st.frame_size) if st.in_frame else None)
-        standoff = self._reach_optimal_standoff(dims, s.table.surface_z)
+        # ~standoff_override_m > 0 parks the base at that distance instead (experiments).
+        override = float(rospy.get_param("~standoff_override_m", 0.0))
+        standoff = override if override > 0 else self._reach_optimal_standoff(dims, s.table.surface_z)
+        if override > 0:
+            rospy.loginfo("[task] Standoff override: %.2fm", override)
 
         raw_near_x = (s.table.near_x if s.table.edge_known
                       else s.target.position.x - TABLE_DEPTH_M / 2.0)
@@ -964,16 +873,7 @@ class TaskOrchestrator:
         self._set_tilt(self.tilt_near)   # the whole target in frame, base to top
         rospy.sleep(1.2)   # let perception deliver frames of the unobstructed scene
         st = self.get_target(target_name=target_name).state
-        # A single read here can catch perception between frames (a live pick
-        # measured this: whatever caused it, detections briefly read zero right
-        # at this instant, lock_age was already past GRASP_MAX_LOCK_AGE, and the
-        # plan fell all the way through to the map fallback -- baseline height
-        # AND an unprimed odometry cache at once, so nothing downstream could
-        # catch it either: the arm closed on empty air, lifted, "placed" and
-        # released nothing, and still reported success). Retry briefly for a
-        # FRESH detection before accepting a stale one -- cheap when perception
-        # is already fine (breaks out immediately), and turns a fixable timing
-        # gap into a correct grasp instead of a silent no-op.
+        # A single read here can catch perception between frames
         # The depth planner needs the target in the CURRENT frame, and a small
         # object close up is detected only intermittently (the can at 0.40 m
         # scores ~0.12 against a 0.10 threshold). Without this wait a fresh
@@ -1006,9 +906,7 @@ class TaskOrchestrator:
         dims = (dims_hwl_from_size(st.calibrated_size) if st.calibrated
                 else dims_hwl_from_size(st.frame_size) if st.in_frame
                 else dims_hwl_from_size(st.lock_size) if st.locked else None)
-        # Orientation has no calibrated-over-time analogue (unlike size, it
-        # isn't meaningful to average across frames taken from different
-        # angles) — same frame/lock priority as dims, one level simpler.
+        # Orientation has no calibrated-over-time analogue — same frame/lock priority as dims, one level simpler.
         orientation = (st.frame_orientation if st.in_frame
                       else st.lock_orientation if st.locked else None)
         grasp_axis = s.target.grasp_axis or "along_x"
@@ -1035,7 +933,32 @@ class TaskOrchestrator:
         # The plan is chosen once per attempt and reused for this attempt's
         # execute_grasp call below — NOT recomputed there (see _choose_plan).
         plan_msg, tz = self._choose_plan(st, pos, dims, grasp_axis, tz, orientation)
-        pre, failures, followed, pretipped, pretip_reaim = None, 0, False, False, False
+        # 5b. PARK DISTANCE, judged from the planner's grasp point (see PARK_GRASP_*):
+        #     one straight drive to bring it into the window, then measure and plan again.
+        gd = math.hypot(plan_msg.grasp_point.x, plan_msg.grasp_point.y)
+        if not (PARK_GRASP_MIN_M <= gd <= PARK_GRASP_MAX_M):
+            move = round(gd - PARK_GRASP_TARGET_M, 3)
+            rospy.loginfo("[task] Grasp point %.3fm from the base (window %.2f-%.2fm) — "
+                          "driving %+.3fm before the pre-grasp", gd, PARK_GRASP_MIN_M,
+                          PARK_GRASP_MAX_M, move)
+            try:
+                dr = self.drive_relative(turn=0.0, distance=move, max_angular=0.0, max_linear=0.0)
+                if not dr.success:
+                    rospy.logwarn("[task] Park correction refused: %s", dr.message)
+            except rospy.ServiceException as e:
+                rospy.logwarn("[task] Park correction failed: %s", e)
+            rospy.sleep(1.5)
+            ctx["grasp_table_near_x"] -= move
+            st = self._wait_in_frame(target_name, self.get_target(target_name=target_name).state)
+            p = measured_position(st, GRASP_MAX_LOCK_AGE)
+            if p is not None:
+                pos = [round(p[0], 3), round(p[1], 3)]
+            self._remember(TargetMemoryRequest.MEASURE)
+            scene_obstacles = list(self.get_scene(target_name=target_name).obstacles)
+            plan_msg, tz = self._choose_plan(st, pos, dims, grasp_axis, tz, orientation)
+            rospy.loginfo("[task] After the park correction: grasp point %.3fm from the base",
+                          math.hypot(plan_msg.grasp_point.x, plan_msg.grasp_point.y))
+        pre, failures, followed, reaim_widened = None, 0, False, False
         retake_blocked, saved = False, None
         while True:
             pre = self.execute_pregrasp(
@@ -1050,48 +973,10 @@ class TaskOrchestrator:
                 if retake_blocked:
                     # Back at the ORIGINAL standoff after the tilt-corrected one was
                     # blocked: let the descent's re-aim follow the tilt instead.
-                    rospy.set_param(f"/{self.ns}/arm/reaim_max_mm", PRETIP_REAIM_MAX_MM)
-                    pretip_reaim = True
+                    rospy.set_param(f"/{self.ns}/arm/reaim_max_mm", RETAKE_REAIM_MAX_MM)
+                    reaim_widened = True
                     break
                 d = None if followed else self._settled_shift()
-                if (not followed and not pretipped and rospy.get_param("~pretip_enable", False)
-                        and (d is None or abs(d[2]) < PRETIP_UNTIPPED_DZ_M)
-                        and self._pretip_clear(
-                            max(plan_msg.grasp_point.z + PRETIP_LIFT_M,
-                                tz + tilt[2] + (float(dims[0]) if dims else 0.25) + PRETIP_TOP_CLEAR_M),
-                            scene_obstacles)):
-                    # The base is still upright with the arm at the standoff, so it will
-                    # flip forward DURING the straight-in leg (see _pretip). Flip it now,
-                    # away from the object, then measure the shift it caused.
-                    pretipped = True
-                    top_z = tz + tilt[2] + (float(dims[0]) if dims else 0.25)
-                    q = plan_msg.grasp_orientation
-                    yaw = 2.0 * math.atan2(q.z, q.w)
-                    flipped = self._pretip(top_z, plan_msg.grasp_point.z, yaw)
-                    if flipped:
-                        sh = self._ref_shift()
-                        if sh is not None and sh[2] < PRETIP_MIN_FLIP_DZ_M:
-                            # Repeat the SAME reach: a longer one (+5 cm) went past the
-                            # bottle and knocked it in 2/2 runs where it was used.
-                            rospy.logwarn("[task] Pre-tip: the object only rose %+.0f mm — partial "
-                                          "flip, repeating the reach once", sh[2] * 1000)
-                            self._pretip(top_z, plan_msg.grasp_point.z, yaw)
-                            sh = self._ref_shift()
-                        if sh is not None:
-                            rospy.loginfo("[task] Pre-tip done: object now (%+.0f, %+.0f, %+.0f) mm "
-                                          "from where it was measured", *(v * 1000 for v in sh))
-                        # The flip plus the swing move the object 40-49 mm; let the
-                        # descent re-aim follow that far for this pick only.
-                        rospy.set_param(f"/{self.ns}/arm/reaim_max_mm", PRETIP_REAIM_MAX_MM)
-                        pretip_reaim = True
-                    if flipped:
-                        # Do NOT re-take the pre-grasp: after the flip the object is ~30 mm
-                        # nearer, and the collision-aware approach to the nearer standoff
-                        # was blocked 4/6 times (43%/35% coverage, 100% without the scene).
-                        # The arm is back at the standoff it verified; the descent's own
-                        # re-aim (odometry reference, xy and height, 45 mm limits) absorbs
-                        # the shift the flip caused.
-                        d = None
                 if d is None:
                     break
                 followed = True
@@ -1170,7 +1055,7 @@ class TaskOrchestrator:
             g = self.execute_grasp(plan=plan_msg, object_now=obj_now or Point(),
                                    object_now_valid=obj_now is not None)
         finally:
-            if pretip_reaim:   # back to the arm's own default for every other pick
+            if reaim_widened:   # back to the arm's own default for every other pick
                 try:
                     rospy.delete_param(f"/{self.ns}/arm/reaim_max_mm")
                 except KeyError:
@@ -1269,8 +1154,7 @@ class TaskOrchestrator:
                           math.degrees(r.seat_turn))
             plan_msg, source = r.plan, "planner"
             # Re-prime the odometry cache with THIS measurement: it's real
-            # geometry from the actual band picked, not YOLO3D's bbox-based
-            # position (which has a documented range-dependent radial bias).
+            # geometry from the actual band picked
             # The contact-check gate compares its commanded point against
             # whatever the cache holds — if the cache still held the older,
             # cruder estimate, a genuinely more accurate plan would disagree

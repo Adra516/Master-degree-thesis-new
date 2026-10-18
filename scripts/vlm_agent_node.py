@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
 """vlm_agent_node — the VLM planning layer, thin.
 
-Reuses the name of the original, monolithic vlm_agent_node.py (1064 lines;
-retired, see git history) — this file is its replacement, not the same code:
-ported near-verbatim from rework-attempt-1's scripts/vlm_agent_node.py
-(itself briefly renamed task_agent_node.py in this repo, then renamed back).
-All the geometry/navigation/grasp logic that used to live inline in the old
-file now lives in world_model_node.py's TaskOrchestrator, reached through
-exactly two service calls — this file only runs the VLM loop.
+this file only runs the VLM loop.
 
 The VLM (Ollama, qwen3-vl) is given a task and these tools, and decides what to
 call. Each tool is one service call to task_orchestrator (the TaskOrchestrator
@@ -20,11 +14,6 @@ view and/or the camera image(s) attached so it can check the outcome itself.
                               object through a few angles, then always place it
   navigate_to(target_name) -> /locobot/task/navigate_to
   update_plan(...)         -> in-process only; mutates the shared plan/state JSON
-
-place is no longer part of get_object: it now stops once the object is held, so
-a second high-level tool (inspect_object) can look at it before deciding what
-to do next — matching the earlier design where get_object also placed, which
-made it impossible to look at an object without immediately losing it again.
 
 This node also serves run_task (RunTask.srv): give it one natural-language task,
 it runs the loop above to completion and returns the VLM's final answer plus
@@ -45,10 +34,7 @@ from sensor_msgs.msg import Image
 
 from locobot_prog.srv import GetObject, InspectObject, NavigateTo, RunTask, RunTaskResponse
 
-# A grasp counts as holding the object above this finger position — the value
-# task_orchestrator (world_model_node.py) uses to set "success". Stated to the
-# VLM from here so the prompt cannot drift from the code (it once said 0.020
-# while the code used 0.015).
+# A grasp counts as holding the object above this finger position 
 GRIP_HELD_MIN_WIDTH = 0.015
 
 SYSTEM_PROMPT = f"""You are an autonomous LoCoBot manipulation agent.
@@ -78,8 +64,7 @@ final (non-tool-call) reply."""
 class PlanState:
     """The shared plan/state JSON the VLM reads and writes through update_plan.
     Deliberately a loose scratchpad, not a schema — a free-text goal/steps list
-    plus a facts dict the VLM fills in itself (e.g. what inspect_object found),
-    not a validated structure this node interprets or acts on."""
+    plus a facts dict the VLM fills in itself, not a validated structure this node interprets or acts on."""
 
     def __init__(self):
         self.goal = None

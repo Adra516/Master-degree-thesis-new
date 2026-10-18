@@ -12,12 +12,6 @@
   ~shift_arm          (ShiftArm)         Cartesian offset from the current EE pose — used
                                          by inspect_object to dodge a nearby obstacle
 
-Ported near-verbatim from rework-attempt-1's scripts/arm_node.py — see
-grasp_executor.py's module docstring for what "ported" means here: the logic,
-timings and checks are the two-phase grasp originally proven in
-locobot_motion_node.py (retired — see git history), just executing a
-caller-supplied GraspPlan instead of deriving one inline.
-
 Independently runnable and testable on its own:
 `rosservice call /locobot/arm/set_arm_pose "pose_name: 'grasp_ready'"`.
 
@@ -38,14 +32,6 @@ from geometry_msgs.msg import Point
 from moveit_commander import PlanningSceneInterface
 from moveit_msgs.msg import MoveGroupAction
 
-# roslaunch execs this file's source through a tiny generated wrapper in
-# devel/lib/, so __file__'s directory (not Python's own auto-prepended
-# sys.path[0], which points at the WRAPPER's directory in that case) must be
-# added explicitly for the flat sibling imports below to resolve. Same
-# pattern already used by the now-retired locobot_motion_node.py/
-# vlm_agent_node.py — missing here caused a real ModuleNotFoundError under
-# `roslaunch` (never surfaced by direct `python3 arm_node.py` testing, where
-# the auto-prepend happens to already be correct).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from arm_actuators import ARM_JOINTS, ARM_POSES, CAMERA_CLEAR_POSE, ArmActuator, Gripper
 from arm_diagnostics import GraspDiagnostics

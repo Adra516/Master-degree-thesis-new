@@ -1,16 +1,5 @@
 """Which detection is the object the user asked for.
 
-Ported near-verbatim from rework-attempt-1's src/locobot_prog/perception/
-resolver.py. This is the concrete replacement for yolo_detection_node.py's
-_ALIAS_MAP (a plain OR-check: is_target = class_name == target_object or
-class_name in target_aliases) — that check has no way to prefer one candidate
-over another when two DIFFERENT objects share a label; this scores each
-matching candidate by confidence x plausibility(measured size vs the
-catalogue's expected size), so a same-labelled wrong object loses to a
-better-sized one instead of racing it on a coin flip. yolo_detection_node.py
-itself is untouched — this is consumed by detection_shim.py/world_model.py,
-not by the perception node.
-
 The ONE place that answers "is this the target". Before, the answer was given
 in five places against three different reference names (the perception
 node's ~target_object, the agent's ~target_object and the VLM's tool

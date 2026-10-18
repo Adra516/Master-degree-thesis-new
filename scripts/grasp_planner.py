@@ -56,17 +56,10 @@ JAW_MAX = gg.jaw_width(gg.FINGER_OPEN)   # 56 mm pad to pad (see gg.PAD_INSET)
 SIDE_CLEARANCE = 0.002              # the open jaws must pass the object by this, per side
 MAX_SEAT_TURN = math.radians(25.0)  # how far the object may turn in the closing jaws
 ROUND_TOL = 0.002                   # w(theta) this close to its minimum: nothing to turn toward
-# The jaw pads are a vertical strip, not a line: the finger mesh
-# (mobile_wx250s_10_gripper_finger.stl) is 55.3 x 16.0 x 29.0 mm, and its 29 mm
-# side is vertical for a level grip. Everything within half of that above and
+# Everything within half of that above and
 # below the grip height has to fit between the open jaws too.
 PAD_HALF = 0.0145
-# ...plus what the arm actually does: it sits ~3 mm below the commanded height
-# (pre-grasp dz was -2.3 to -3.1 mm on every run, gravity sag) and bands are 5 mm
-# apart. A live trace with ground truth showed why the margin matters: at 188 mm
-# the pad reached down to the 58 mm shoulder, the right finger came within
-# ~1.6 mm of it, and with this model's friction (mu 5) that graze dragged the
-# bottle 21 mm forward before the jaws closed.
+# ...plus what the arm actually does
 PAD_MARGIN = 0.008
 # Per-side clearance at which more room stops mattering. A tight fit is easy to
 # miss by a few mm of lateral error (one finger lands on the object and pushes
@@ -80,22 +73,7 @@ PAD_MARGIN = 0.008
 # lower finger corner grazed it in the real run. 18 = 10 + 8.
 CLEARANCE_FULL = 0.018
 # How far beyond the surface the fingers are commanded (per finger). The jaws stop
-# at the object; the command only sets the squeeze. Measured on live bottle picks
-# at a fixed grip height: ~4-6 mm held it upright; ~8-10 mm made the pads walk
-# down the neck's taper to the 52-60 mm shoulder (gripper read 26-28 mm/finger) or
-# shoved it out of the jaws (9 mm = empty). But on a genuine cone the SAME 6 mm
-# does not mean the same thing at every band: two live picks on bands 4 mm apart
-# (198 mm, 202 mm) put the fingers 6.8 mm and 2.8 mm short of a 6 mm target —
-# the second one, with barely any margin between the measured contact and the
-# commanded target, tipped the bottle >10 deg and dragged it 38 mm while
-# closing. 4 mm is the safe end of that measured range; it still holds (measured
-# clean: 0 deg / 0 mm disturbance at 198 mm) with more of the margin behind it.
-# CAVEAT: every squeeze above was measured before gg.PAD_INSET existed, when
-# close targets ignored it, so the pads were really commanded SQUEEZE + 9 mm
-# into the object (13 mm, not 4). That is the jaws "stalling" at ~57 mm and
-# snapping shut on the lift: they were resting on the neck at 39 mm real width,
-# preloaded 13 mm deep. With the inset applied, 4 mm now means 4 mm (~0.4 N at
-# the gripper's p=100).
+# at the object; the command only sets the squeeze.
 SQUEEZE = 0.004
 TAPER_LOOKUP = 0.02                 # diagnostic only: compare the width this far above the grip...
 TAPER_DROP = 0.005                  # ...narrower by more than this = tapered

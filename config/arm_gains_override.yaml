@@ -1,9 +1,5 @@
 # Arm PID gain overrides for the Gazebo effort controllers.
 #
-# RE-TUNED 2026-07-09 with an automated measured battery (3 s hold-ripple
-# peak-to-peak + 15-degree waist step ring + descent-trajectory end error,
-# recorded from /locobot/joint_states) instead of eyeballing Gazebo.
-#
 # THE OSCILLATION CULPRIT WAS forearm_roll's p=20 — NOT the waist/wrists.
 # Measured at grasp_ready hold (forearm_roll ripple peak-to-peak):
 #
@@ -44,6 +40,7 @@ locobot:
       waist:        {p: 100.0, i: 5.0, d: 3.0}    # vendor + d 1->3 (measured)
       wrist_angle:  {p: 100.0, i: 3.0, d: 1.0}    # vendor (d=3 was ripple source)
       wrist_rotate: {p: 100.0, i: 1.0, d: 0.1}    # vendor (d=2 was ripple source)
+      
   # Gripper LEFT AT VENDOR GENTLE GAINS (p=100) on purpose.  The gazebo_grasp_fix
   # WELD is the holder (it fires on the two-sided contact and rigidly attaches
   # the object), so the fingers only need to make gentle contact.  A stronger
