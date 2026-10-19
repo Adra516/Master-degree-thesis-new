@@ -39,6 +39,7 @@ from moveit_msgs.srv import GetPositionIK, GetPositionIKRequest
 from sensor_msgs.msg import CameraInfo, Image, JointState
 from std_msgs.msg import Float64
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import camera_aim
 import footprint
 import grasp_geometry as gg
 import grasp_planner as gp
@@ -64,7 +65,7 @@ from locobot_prog.srv import (ApproachTarget, ApproachTargetRequest,
                               NavigateTo, NavigateToResponse,
                               PlanGrasp, PlanGraspResponse, SetArmPose, SetJoint,
                               ShiftArm, TargetMemory, TargetMemoryRequest,
-                              TargetMemoryResponse)
+                              TargetMemoryResponse, TurnHand)
 
 # The grasp point trusts a target lock at most this old (positioning uses 2 s):
 # the robot has been standing still since it aligned.
@@ -147,6 +148,8 @@ INSPECT_MIN_OFFSET_RAD = 0.12         # floor, so a very tall object still gets 
 INSPECT_OFFSET_FRACTIONS = [-1.0, -0.5, 0.0, 0.5, 1.0]   # 5 steps, symmetric, as before
 INSPECT_STEP_MOVE_TIME = 1.0
 INSPECT_STEP_SETTLE_S = 0.5
+INSPECT_CAMERA_SETTLE_S = 2.0   # head (effort position controller) to settle after a single step command
+INSPECT_CAMERA_SETTLE_SMOOTH_S = 0.6   # ... after a ramp, which already arrives slowly
 
 
 def inspect_offsets_for(height):
@@ -172,6 +175,14 @@ def inspect_offsets_for(height):
 # its own); the bottle's other neighbours (tea_box/can_coke) are 0.25m+ away
 # and were never observed to collide.
 INSPECT_OBSTACLE_CLEAR_M = 0.20
+PLACE_MAX_SHIFT_M = 0.25      # a reprojected original position farther than this from the grasp point is not trusted
+PLACE_MIN_REACH_M = 0.33      # the arm's own reach window for a placement (grasp_executor REACH_MIN/MAX)
+PLACE_MAX_REACH_M = 0.55
+PLACE_COMFORT_MAX_M = 0.53    # farther than this the base is moved back first (it turns to face the spot when >3 deg off)
+PLACE_BEARING_TOL = math.radians(3.0)
+PLACE_PARK_DIST_M = 0.50      # where the base parks for a pick (reach.py), so where it returns to
+PLACE_MAX_DRIVE_M = 0.15
+PLACE_SETTLE_S = 1.5
 # How far (m) to shift the arm horizontally away from the closest too-near
 # obstacle before rotating. Also first-pass/not yet live-verified.
 INSPECT_SHIFT_AWAY_M = 0.12
@@ -512,6 +523,7 @@ class TaskOrchestrator:
         self.execute_place = proxy("arm/execute_place", ExecutePlace)
         self.set_joint = proxy("arm/set_joint", SetJoint)
         self.shift_arm = proxy("arm/shift_arm", ShiftArm)
+        self.turn_hand = proxy("arm/turn_hand", TurnHand)
 
         # Held-object state
         self._held = None
@@ -535,8 +547,11 @@ class TaskOrchestrator:
         self.tilt_far = float(rospy.get_param("~camera_tilt_far", 0.35))
         self.tilt_near = float(rospy.get_param("~camera_tilt_near", 0.45))
         self._tilt = None
+        self._head = None             # (pan, tilt) last commanded by _move_head
         self._tilt_pub = rospy.Publisher(f"/{ns}/tilt_controller/command", Float64,
                                          queue_size=1, latch=True)
+        self._pan_pub = rospy.Publisher(f"/{ns}/pan_controller/command", Float64,
+                                        queue_size=1, latch=True)
 
         self._ground_truth = None     # Gazebo, only when a diag model is named
         self._ref_point = None        # (x, y, z) in base_link of the point last cached in the odometry memory
@@ -668,8 +683,12 @@ class TaskOrchestrator:
             self._held = None   # cleared up front: inspect_object always places,
                                 # so nothing stays "held" past this call either way
             views, desc = self._rotate_and_capture(held)
-            placed = self.execute_place(place_point=Point(held["pos"][0], held["pos"][1], 0.0),
-                                        at_grasp_height=True)
+            point, exact = self._place_point(held)
+            placed = self.execute_place(place_point=point, at_grasp_height=not exact, exact=exact)
+            try:
+                self.target_memory(action=TargetMemoryRequest.FORGET)
+            except rospy.ServiceException:
+                pass
             if not placed.success:
                 desc += f" Place step failed: {placed.message or 'unknown'}."
             rospy.loginfo("[task] inspect_object: %d view(s), placed=%s",
@@ -677,6 +696,63 @@ class TaskOrchestrator:
             return InspectObjectResponse(success=bool(views) and placed.success,
                                          message="" if views else "No views captured.",
                                          views=views, description=desc)
+
+    def _place_point(self, held):
+        """(Point, exact): where to put the held object down. The object's ORIGINAL position,
+        reprojected from the odometry memory into the base frame as it is now.
+
+        Measured 2026-10-19: between the grasp and the end of an inspection the base rolls
+        back 5-11 cm and yaws 6-11 degrees, so the original spot ends up 0.60-0.63 m from the
+        base, beyond the arm's reach; placing at the grasp point in the OLD base frame put the
+        object 10-15 cm from where it was picked up. So when the original position is too far
+        or off to the side, the base first turns and drives back to where it parked (one
+        move, never more than PLACE_MAX_DRIVE_M forward), then the position is reprojected
+        again. Odometry under-reads the backward roll by 3-4 cm, so a few cm of error remain.
+
+        Falls back to the position noted at the grasp, in the old base frame, when the memory is
+        gone, implausible, or still out of reach."""
+        fallback = (Point(held["pos"][0], held["pos"][1], 0.0), False)
+
+        def reproject():
+            try:
+                mem = self.target_memory(action=TargetMemoryRequest.REPROJECT)
+            except rospy.ServiceException:
+                return None
+            return (mem.position.x, mem.position.y, mem.position.z) if mem.ok else None
+
+        ref = reproject()
+        if ref is None:
+            return fallback
+        moved = math.hypot(ref[0] - held["pos"][0], ref[1] - held["pos"][1])
+        if moved > PLACE_MAX_SHIFT_M:
+            rospy.logwarn("[task] inspect_object: the remembered original position (%.3f, %.3f) is "
+                          "%.0f mm from the grasp point — not trusted, placing at the grasp point",
+                          ref[0], ref[1], moved * 1000)
+            return fallback
+        dist, bearing = math.hypot(ref[0], ref[1]), math.atan2(ref[1], ref[0])
+        if dist > PLACE_COMFORT_MAX_M:       # sideways offsets are the arm's waist; only distance needs the base
+            turn = bearing if abs(bearing) > PLACE_BEARING_TOL else 0.0
+            drive = max(-PLACE_MAX_DRIVE_M, min(PLACE_MAX_DRIVE_M, dist - PLACE_PARK_DIST_M))
+            rospy.loginfo("[task] inspect_object: the base has crept — the original position is now "
+                          "%.3fm away at %+.1f deg; turning %+.1f deg and driving %+.3fm back",
+                          dist, math.degrees(bearing), math.degrees(turn), drive)
+            try:
+                r = self.drive_relative(turn=turn, distance=drive, max_angular=0.0, max_linear=0.0)
+                if not r.success:
+                    rospy.logwarn("[task] inspect_object: the base move was refused: %s", r.message)
+            except rospy.ServiceException as e:
+                rospy.logwarn("[task] inspect_object: the base move failed: %s", e)
+            rospy.sleep(PLACE_SETTLE_S)
+            ref = reproject()
+            if ref is None:
+                return fallback
+        if not (PLACE_MIN_REACH_M <= math.hypot(ref[0], ref[1]) <= PLACE_MAX_REACH_M):
+            rospy.logwarn("[task] inspect_object: the original position (%.3f, %.3f) is out of the "
+                          "arm's reach — placing at the grasp point instead", ref[0], ref[1])
+            return fallback
+        rospy.loginfo("[task] inspect_object: placing back at the original position (%.3f, %.3f)",
+                      ref[0], ref[1])
+        return Point(ref[0], ref[1], ref[2]), True
 
     def _dodge_nearby_obstacle(self, held):
         """If another catalogued object sits closer than INSPECT_OBSTACLE_CLEAR_M
@@ -711,7 +787,7 @@ class TaskOrchestrator:
         if not r.success:
             rospy.logwarn("[task] inspect_object: obstacle-dodge shift failed: %s", r.message)
 
-    def _rotate_and_capture(self, held):
+    def _rotate_and_capture_wrist(self, held):
         """Sweep wrist_rotate through inspect_offsets_for(held height) around
         wherever the grasp left it, capturing one frame per step. Never
         raises — a failed step is just skipped, so the caller can still
@@ -786,6 +862,109 @@ class TaskOrchestrator:
         else:
             rospy.sleep(INSPECT_STEP_SETTLE_S)
         desc = f"Rotated '{target_name}' through {len(views)} view(s) for inspection."
+        return views, desc
+
+    def _head_now(self):
+        """(pan, tilt) the head is at: measured when joint_states has it, else the last
+        angles commanded here, else the fixed forward view."""
+        pan, tilt = self._current_joint("pan"), self._current_joint("tilt")
+        if pan is None or tilt is None:
+            pan, tilt = self._head if self._head is not None else (0.0, self._tilt or self.tilt_far)
+        return pan, tilt
+
+    def _move_head(self, target, settle):
+        """Take the head to `target` (pan, tilt): as a minimum-jerk ramp of position commands
+        (`~camera_smooth`, default true), else as one step command like before."""
+        if rospy.get_param("~camera_smooth", True):
+            pts, dt = camera_aim.head_path(self._head_now(), target)
+            for pan, tilt in pts:
+                self._pan_pub.publish(Float64(pan))
+                self._tilt_pub.publish(Float64(tilt))
+                rospy.sleep(dt)
+        else:
+            self._pan_pub.publish(Float64(target[0]))
+            self._tilt_pub.publish(Float64(target[1]))
+        self._head = target
+        rospy.sleep(settle)
+
+    def _aim_camera(self, point, settle=INSPECT_CAMERA_SETTLE_S):
+        """Point the camera head at `point` (base_link), smoothly, and let it settle."""
+        pan, tilt = camera_aim.aim_angles(point)
+        self._tilt = None            # the head is no longer at one of the fixed tilts
+        smooth = rospy.get_param("~camera_smooth", True)
+        self._move_head((pan, tilt), INSPECT_CAMERA_SETTLE_SMOOTH_S if smooth else settle)
+        return pan, tilt
+
+    def _restore_camera(self):
+        """Back to the fixed view every other step assumes (pan 0, near tilt)."""
+        self._move_head((0.0, self.tilt_near), 0.3)
+        self._tilt = self.tilt_near
+
+    def _rotate_and_capture(self, held):
+        """The inspection sweep: `~inspect_mode` "yaw" (default) turns the HAND in place and
+        keeps the camera on the held object; "wrist" is the older wrist_rotate sweep. The
+        hand sweep falls back to the wrist sweep when no hand yaw can be reached."""
+        if rospy.get_param("~inspect_mode", "yaw") == "wrist":
+            return self._rotate_and_capture_wrist(held)
+        views, desc = self._rotate_and_capture_yaw(held)
+        if views:
+            return views, desc
+        rospy.logwarn("[task] inspect_object: no hand yaw was reachable — falling back to the "
+                      "wrist sweep")
+        return self._rotate_and_capture_wrist(held)
+
+    def _rotate_and_capture_yaw(self, held):
+        """Show the held object from several sides with the arm out of the way.
+
+        The camera sits right above the arm base, so an object held in front is seen past
+        the elbow and forearm (measured 2026-10-19: even aimed at it, the forearm covers the
+        middle of the frame, and pulling the object closer makes it worse). Yawing the hand
+        about the vertical through the held point (srv/TurnHand) turns the object about its
+        own axis AND swings the forearm to one side; at +-0.5 rad the whole bottle is clear
+        in the frame. The head is aimed at the object's centre before every capture. Never
+        raises: an unreachable yaw is skipped, and the hand is always returned to where it
+        started before the caller places the object."""
+        target_name = held["target_name"]
+        self._dodge_nearby_obstacle(held)
+        try:
+            start = self.turn_hand(yaw=0.0, move_time=0.0)      # no sequence open: a pure read
+        except rospy.ServiceException as e:
+            rospy.logwarn("[task] inspect_object: turn_hand unavailable: %s", e)
+            return [], ""
+        if not start.success:
+            return [], ""
+        captured = []                                           # (yaw, frame)
+        reached = []
+        try:
+            for yaw in camera_aim.inspect_order():
+                if yaw == 0.0:
+                    self.turn_hand(yaw=0.0, move_time=0.0)       # back to the exact start joints
+                    continue
+                r = self.turn_hand(yaw=yaw, move_time=0.0)
+                if not r.success:
+                    rospy.loginfo("[task] inspect_object: hand yaw %+.2f skipped: %s", yaw, r.message)
+                    continue
+                ee = (r.ee_position.x, r.ee_position.y, r.ee_position.z)
+                centre = camera_aim.held_centre(ee, held.get("grasp_above_table"), held.get("height"))
+                pan, tilt = self._aim_camera(centre)
+                rospy.sleep(INSPECT_STEP_SETTLE_S)
+                if self._latest_color is not None:
+                    captured.append((yaw, self._latest_color))
+                reached.append(yaw)
+                rospy.loginfo("[task] inspect_object: yaw %+.2f rad, camera pan %+.2f tilt %+.2f", yaw, pan, tilt)
+        finally:
+            try:
+                self.turn_hand(yaw=0.0, move_time=0.0)           # no-op when already back
+            except rospy.ServiceException:
+                pass
+            self._restore_camera()
+        captured.sort(key=lambda c: c[0])
+        views = [f for _, f in captured]
+        if not views:
+            return [], ""
+        desc = (f"Turned '{target_name}' in place through {len(views)} view(s) "
+                f"(hand yaw {min(reached):+.2f} to {max(reached):+.2f} rad) with the camera aimed "
+                f"at it, for inspection.")
         return views, desc
 
     # ── Steps ────────────────────────────────────────────────────────────────
@@ -1074,9 +1253,11 @@ class TaskOrchestrator:
         # window" and were reported as a held object.
         grasped = g.success
         if grasped and gw > GRIP_HELD_MIN_WIDTH:
-            self.target_memory(action=TargetMemoryRequest.FORGET)
+            # The odometry memory is KEPT while the object is held: inspect_object reprojects it
+            # to put the object back where it was, however far the base has crept since.
             self._held = {"target_name": target_name, "pos": pos,
-                         "height": float(dims[0]) if dims else None}
+                         "height": float(dims[0]) if dims else None,
+                         "grasp_above_table": float(plan_msg.grasp_point.z - tz)}
             desc = (f"Grasped and holding '{target_name}' (width {gw * 1000:.0f}mm). "
                     f"Call inspect_object to look at it — it will be placed back down "
                     f"at the end of that call.")

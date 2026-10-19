@@ -1,0 +1,20 @@
+# Yaw the HAND about the vertical line through its own point: the end effector stays
+# where it is and only its orientation changes, so an object held at that point turns
+# about ITS OWN axis (a bottle shows its other sides) and the forearm swings aside
+# instead of staying in front of the object for a camera mounted over the arm base.
+# Solved by MoveIt IK from the arm's last commanded joints and executed as ONE
+# joint-space move (collision checking off, like ShiftArm — it moves an already-held
+# object in place). Measured 2026-10-19: +-0.5 rad is solvable for a held bottle,
+# +-0.9 is not (NO_IK_SOLUTION).
+#
+# yaw = 0 returns to EXACTLY the joints the first call started from and ends the
+# sequence; with no sequence open it is a pure read (no motion), which is how a caller
+# learns where the hand is. Every non-zero yaw is relative to that same starting pose,
+# never cumulative.
+float64 yaw             # rad about +z of base_link
+float64 move_time       # s; <= 0 scales with the joint travel
+---
+bool success
+string message
+geometry_msgs/Point ee_position    # where the hand ended up (base_link)
+float64[] joint_positions          # ARM_JOINTS order, as commanded

@@ -12,6 +12,7 @@ file deliberately does NOT replay a real pick-and-place (that needs Gazebo;
 see the live verification step), only the hold/refuse/place bookkeeping this
 session added around it.
 """
+import math
 import os
 import sys
 from types import SimpleNamespace as NS
@@ -21,14 +22,16 @@ sys.path.insert(0, os.path.join(_HERE, "..", "scripts"))
 
 import rospy  # noqa: E402
 
-rospy.get_param = lambda name, default=None: default
+PARAMS = {}
+rospy.get_param = lambda name, default=None: PARAMS.get(name, default)
 rospy.loginfo = lambda *a, **k: None
 rospy.logwarn = lambda *a, **k: None
 rospy.logerr = lambda *a, **k: None
 rospy.sleep = lambda *_: None
 rospy.is_shutdown = lambda: False
 rospy.Subscriber = lambda *a, **k: None
-rospy.Publisher = lambda *a, **k: NS(publish=lambda *a, **k: None)
+PUBLISHED = []          # (topic, value) for every Publisher.publish
+rospy.Publisher = lambda topic, *a, **k: NS(publish=lambda m, *x, **y: PUBLISHED.append((topic, m)))
 rospy.wait_for_service = lambda *a, **k: None
 rospy.Service = lambda *a, **k: None
 
@@ -55,10 +58,15 @@ import world_model_node as wmn  # noqa: E402
 
 def _orchestrator(obstacles=()):
     CALLS.clear()
+    PUBLISHED.clear()
+    PARAMS.clear()
+    PARAMS["~inspect_mode"] = "wrist"      # the older sweep; the hand-yaw tests switch it
     SERVICE_HANDLERS.clear()
     SERVICE_HANDLERS["set_joint"] = lambda **kw: NS(
         success=True, message="", joint_positions=[0.0] * 6)
     SERVICE_HANDLERS["execute_place"] = lambda **kw: NS(success=True, message="placed")
+    SERVICE_HANDLERS["target_memory"] = lambda **kw: NS(ok=False, position=NS(x=0.0, y=0.0, z=0.0))
+    SERVICE_HANDLERS["drive_relative"] = lambda **kw: NS(success=True, message="")
     SERVICE_HANDLERS["get_scene"] = lambda **kw: NS(obstacles=list(obstacles))
     SERVICE_HANDLERS["shift_arm"] = lambda **kw: NS(
         success=True, message="", ee_position=NS(x=0.0, y=0.0, z=0.0))
@@ -225,6 +233,159 @@ def test_inspect_offsets_floor_and_unknown_height_fallback():
     assert wmn.inspect_offsets_for(None) == full
     assert wmn.inspect_offsets_for(0.0) == full
     assert wmn.inspect_offsets_for(-0.1) == full
+
+
+def _hand_fake(unreachable=()):
+    """turn_hand fake: records the yaws asked for; `unreachable` yaws have no IK solution."""
+    asked = []
+
+    def turn_hand(yaw=0.0, move_time=0.0):
+        asked.append(yaw)
+        if yaw in unreachable:
+            return NS(success=False, message="no IK solution", ee_position=NS(x=0, y=0, z=0), joint_positions=[])
+        return NS(success=True, message="", ee_position=NS(x=0.50, y=0.02, z=0.63), joint_positions=[0.0] * 6)
+
+    SERVICE_HANDLERS["turn_hand"] = turn_hand
+    return asked
+
+
+def _held():
+    return {"target_name": "bottle", "pos": [0.42, 0.01], "height": 0.25, "grasp_above_table": 0.20}
+
+
+def test_inspect_by_hand_yaw_turns_each_side_returns_home_and_places():
+    node = _orchestrator()
+    PARAMS["~inspect_mode"] = "yaw"
+    asked = _hand_fake()
+    node._held = _held()
+    r = node._handle_inspect_object(NS())
+    assert r.success is True
+    assert len(r.views) == 4, r.views
+    # one side outward, back to the start, the other side, back to the start; first call is the read
+    assert asked == [0.0, -0.35, -0.5, 0.0, 0.35, 0.5, 0.0, 0.0], asked
+    assert not [1 for key, _ in CALLS if key == "set_joint"], "the wrist sweep must not run"
+    place_calls = [kw for key, kw in CALLS if key == "execute_place"]
+    assert len(place_calls) == 1 and node._held is None
+    assert "hand yaw -0.50 to +0.50" in r.description, r.description
+
+
+def test_inspect_by_hand_yaw_aims_the_camera_at_the_object_then_restores_it():
+    node = _orchestrator()
+    PARAMS["~inspect_mode"] = "yaw"
+    PARAMS["~camera_smooth"] = False          # one command per aim: easy to count
+    _hand_fake()
+    node._held = _held()
+    node._handle_inspect_object(NS())
+    pans = [m.data for t, m in PUBLISHED if t.endswith("pan_controller/command")]
+    tilts = [m.data for t, m in PUBLISHED if t.endswith("tilt_controller/command")]
+    assert len(pans) == 5, pans              # 4 aims + the restore
+    assert pans[-1] == 0.0                   # back to the fixed forward view
+    assert tilts[-1] == node.tilt_near       # and the near tilt the next step assumes
+    # held bottle: hand at z 0.63, centre 0.075 lower -> camera at 0.561 looks slightly UP
+    assert all(t < 0.2 for t in tilts[:-1]), tilts
+
+
+def test_the_camera_head_moves_in_a_smooth_ramp_by_default():
+    node = _orchestrator()
+    PARAMS["~inspect_mode"] = "yaw"
+    _hand_fake()
+    node._held = _held()
+    node._handle_inspect_object(NS())
+    pans = [m.data for t, m in PUBLISHED if t.endswith("pan_controller/command")]
+    tilts = [m.data for t, m in PUBLISHED if t.endswith("tilt_controller/command")]
+    assert len(pans) > 40, len(pans)          # many small commands, not five jumps
+    assert pans[-1] == 0.0 and tilts[-1] == node.tilt_near   # the restore ends exactly on the fixed view
+    # no single command moves the head more than a few hundredths of a radian
+    steps = [abs(b - a) for a, b in zip(pans, pans[1:])] + [abs(b - a) for a, b in zip(tilts, tilts[1:])]
+    assert max(steps) < 0.06, max(steps)
+
+
+def test_inspect_by_hand_yaw_skips_unreachable_yaws():
+    node = _orchestrator()
+    PARAMS["~inspect_mode"] = "yaw"
+    _hand_fake(unreachable=(-0.5, 0.5))
+    node._held = _held()
+    r = node._handle_inspect_object(NS())
+    assert len(r.views) == 2, r.views
+    assert "-0.35 to +0.35" in r.description, r.description
+    assert node._held is None and len([1 for k, _ in CALLS if k == "execute_place"]) == 1
+
+
+def test_inspect_by_hand_yaw_falls_back_to_the_wrist_sweep_when_nothing_is_reachable():
+    node = _orchestrator()
+    PARAMS["~inspect_mode"] = "yaw"
+    _hand_fake(unreachable=(-0.5, -0.35, 0.35, 0.5))
+    node._held = _held()
+    r = node._handle_inspect_object(NS())
+    assert len(r.views) == len(wmn.INSPECT_OFFSET_FRACTIONS), r.views
+    assert [1 for k, _ in CALLS if k == "set_joint"], "the wrist sweep should have run"
+    assert node._held is None
+
+
+def _memory(x, y, z=0.47, ok=True):
+    SERVICE_HANDLERS["target_memory"] = lambda **kw: NS(ok=ok, position=NS(x=x, y=y, z=z))
+
+
+def test_inspect_places_the_object_at_its_original_position_reprojected_from_odometry():
+    """Measured 2026-10-19: the base creeps 6-10 cm and yaws a few degrees between a grasp and the
+    end of an inspection, so the object came back 10 cm from where it was picked up. The memory
+    of the original position is reprojected into the CURRENT base frame and used exactly."""
+    node = _orchestrator()
+    _memory(0.40, -0.03, 0.47)                       # 4 cm from where the grasp noted it, 0.42/0.01
+    node._held = {"target_name": "bottle", "pos": [0.42, 0.01]}
+    r = node._handle_inspect_object(NS())
+    place = [kw for key, kw in CALLS if key == "execute_place"][0]
+    assert place["exact"] is True and place["at_grasp_height"] is False
+    assert (place["place_point"].x, place["place_point"].y, place["place_point"].z) == (0.40, -0.03, 0.47)
+    assert [kw for key, kw in CALLS if key == "target_memory"][-1]["action"] == 3   # FORGET, after the place
+    assert not [1 for key, _ in CALLS if key == "drive_relative"], "within reach: the base must not move"
+    assert r.success is True
+
+
+def test_inspect_falls_back_to_the_grasp_point_when_the_memory_is_gone_or_implausible():
+    for ok, x, y in [(False, 0.4, 0.0), (True, 0.70, 0.0), (True, 0.60, 0.0), (True, 0.20, 0.0)]:
+        node = _orchestrator()
+        _memory(x, y, ok=ok)    # gone / 28 cm away / still out of reach after the move / too close
+        node._held = {"target_name": "bottle", "pos": [0.42, 0.01]}
+        node._handle_inspect_object(NS())
+        place = [kw for key, kw in CALLS if key == "execute_place"][0]
+        assert place["exact"] is False and place["at_grasp_height"] is True, (ok, x, y)
+        assert (place["place_point"].x, place["place_point"].y) == (0.42, 0.01)
+
+
+def test_inspect_drives_the_base_back_when_the_original_position_has_crept_out_of_reach():
+    """q1-q4, 2026-10-19: the base rolled back 5-11 cm and yawed, putting the original spot at
+    0.60-0.63 m. One turn + drive back to the parking spot, then reproject and place exactly."""
+    node = _orchestrator()
+    readings = [(0.60, -0.05, 0.47), (0.50, -0.01, 0.47)]       # before / after the move
+
+    def memory(**kw):
+        x, y, z = readings[0] if not [1 for k, _ in CALLS if k == "drive_relative"] else readings[1]
+        return NS(ok=True, position=NS(x=x, y=y, z=z))
+
+    SERVICE_HANDLERS["target_memory"] = memory
+    node._held = {"target_name": "bottle", "pos": [0.50, 0.02]}
+    node._handle_inspect_object(NS())
+    drive = [kw for key, kw in CALLS if key == "drive_relative"]
+    assert len(drive) == 1, drive
+    assert abs(drive[0]["turn"] - math.atan2(-0.05, 0.60)) < 1e-9      # face the original spot
+    assert abs(drive[0]["distance"] - (math.hypot(0.60, -0.05) - 0.50)) < 1e-9   # back to the 0.50 m park
+    place = [kw for key, kw in CALLS if key == "execute_place"][0]
+    assert place["exact"] is True
+    assert (place["place_point"].x, place["place_point"].y) == (0.50, -0.01)
+
+
+def test_the_place_drive_is_bounded():
+    node = _orchestrator()
+    readings = [(0.73, 0.0, 0.47), (0.58, 0.0, 0.47)]
+    SERVICE_HANDLERS["target_memory"] = lambda **kw: NS(ok=True, position=NS(
+        x=readings[0 if not [1 for k, _ in CALLS if k == "drive_relative"] else 1][0], y=0.0, z=0.47))
+    node._held = {"target_name": "bottle", "pos": [0.60, 0.0]}
+    node._handle_inspect_object(NS())
+    drive = [kw for key, kw in CALLS if key == "drive_relative"][0]
+    assert drive["distance"] == wmn.PLACE_MAX_DRIVE_M                  # not the 0.23 m the position asks for
+    place = [kw for key, kw in CALLS if key == "execute_place"][0]
+    assert place["exact"] is False                                      # 0.58 m: still out of reach -> grasp point
 
 
 if __name__ == "__main__":

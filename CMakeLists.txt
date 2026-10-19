@@ -72,6 +72,7 @@ add_message_files(
 #   PlanGrasp : world_model_node's ~plan_grasp (the depth-image grasp planner)
 #   SetJoint : arm_node, single-joint primitive used by inspect_object's rotation sweep
 #   ShiftArm : arm_node, Cartesian-offset primitive used by inspect_object's obstacle dodge
+#   TurnHand : arm_node, in-place hand yaw used by inspect_object to show a held object's sides
 #   RunTask : vlm_agent_node, runs one natural-language task through the VLM tool-use loop
 add_service_files(
   FILES
@@ -83,6 +84,7 @@ add_service_files(
   ExecutePlace.srv
   SetJoint.srv
   ShiftArm.srv
+  TurnHand.srv
   DriveRelative.srv
   ApproachTarget.srv
   GetScene.srv

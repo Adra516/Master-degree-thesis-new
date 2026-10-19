@@ -25,6 +25,7 @@ import rospy
 from geometry_msgs.msg import Pose, PoseStamped
 from moveit_msgs.srv import GetPositionIK, GetPositionIKRequest
 from sensor_msgs.msg import JointState
+from tf.transformations import quaternion_about_axis, quaternion_multiply
 
 import grasp_geometry as gg
 from arm_actuators import ARM_JOINTS, CAMERA_CLEAR_POSE, GRASP_READY_POSE
@@ -79,6 +80,7 @@ PLACE_CLEARANCE = 0.005
 # (object welded mid-approach, held through the whole cycle, never slipped)
 # moved 1mm.
 MIN_CLOSE_TRAVEL_MM = 3.0
+HAND_TURN_MAX_JOINT_DELTA = 1.6   # rad; a larger swing to a hand yaw of <=0.5 rad is the far wrist branch
 # How long to keep watching the fingers, arm still, AFTER the lift before
 # reporting the object held (live-tunable `hold_verify_s`; 0 disables).
 HOLD_VERIFY_S = 8.0
@@ -103,6 +105,7 @@ class GraspExecutor:
         self._ik_srv = rospy.ServiceProxy(f"/{robot_name}/compute_ik", GetPositionIK)
 
         self.table_surface_z = 0.25
+        self._hand_home = None            # joints + pose a turn_hand() sequence started from
         self._last_grasp_z = None         # EE height of the last grasp (for place)
         self._last_grasp_xy = None        # where the jaws last closed (for place)
         self.last_close_target = None     # last commanded per-finger close (m)
@@ -230,7 +233,7 @@ class GraspExecutor:
         ok, info = self._do_descent(plan, obj_base)
         return self._outcome(ok, pg.get("gw_before", self.gripper.position), info)
 
-    def place(self, x, y, place_z=None):
+    def place(self, x, y, place_z=None, exact=False):
         """Lower the held object straight down at (x, y) and release it.
 
         Called right after grasp(), while the arm holds the object at the
@@ -249,9 +252,14 @@ class GraspExecutor:
         still-descending gripper whenever the base had tilted a few mm since the
         grasp: the soft grasp_fix weld flickered and the jammed bottle levered
         wrist_rotate half a turn to its limit (-3.14 rad against 0.08 commanded).
+
+        exact=True: (x, y) is the object's original position in the CURRENT base frame
+        (the caller reprojected it from odometry) and place_z the grip height there; it is
+        used as given. Without it, a point within 6 cm of where the jaws last closed snaps
+        to that spot, which is expressed in the base frame of the moment of the grasp.
         """
         last = self._last_grasp_xy
-        if last is not None and math.hypot(x - last[0], y - last[1]) < 0.06:
+        if not exact and last is not None and math.hypot(x - last[0], y - last[1]) < 0.06:
             x, y = last        # the arm is over the point it actually grasped
         if place_z is None:
             place_z = (self._last_grasp_z or self.table_surface_z + 0.10) + PLACE_CLEARANCE
@@ -335,6 +343,89 @@ class GraspExecutor:
         self.arm.send_joints(CAMERA_CLEAR_POSE, move_time=3.0)
 
         return True, {"placed_at": [round(x, 3), round(y, 3)]}
+
+    def turn_hand(self, yaw, move_time=0.0):
+        """Yaw the hand about the vertical through its own point (position fixed), via IK
+        seeded with the arm's last commanded joints, as one joint-space move. See
+        srv/TurnHand.srv. `yaw` is relative to the pose the first call of a sequence
+        started from; yaw 0 returns to exactly those joints and closes the sequence (with no
+        sequence open it is a pure read). Collision checking is off, as in shift(): this moves
+        an object that is already held, in place. Returns (ok, info) with the hand's x/y/z."""
+        if self.arm.last_target is None:
+            return False, {"reason": "no commanded pose yet to turn the hand from"}
+
+        def ee_xyz():
+            p = self.move_group.get_current_pose().pose.position
+            return {"x": p.x, "y": p.y, "z": p.z}
+
+        if abs(yaw) < 1e-6:
+            home, self._hand_home = self._hand_home, None
+            if home is None:
+                return True, dict(ee_xyz(), joints=list(self.arm.last_target))
+            dj = max(abs(a - b) for a, b in zip(home["joints"], self.arm.last_target))
+            self.arm.send_joints(home["joints"], move_time=move_time if move_time > 0 else 2.0 + 1.8 * dj)
+            self.arm.hold(0.5)
+            return True, dict(ee_xyz(), joints=list(self.arm.last_target))
+
+        if self._hand_home is None:
+            p = self.move_group.get_current_pose().pose
+            self._hand_home = {"joints": list(self.arm.last_target), "pose": p}
+        home_pose = self._hand_home["pose"]
+        o = home_pose.orientation
+        q = quaternion_multiply(quaternion_about_axis(yaw, (0.0, 0.0, 1.0)), [o.x, o.y, o.z, o.w])
+        # The IK solver is a local one: from the held pose it often finds no solution for
+        # a larger yaw, but a seed near the answer converges. Measured joint changes for a
+        # +-0.5 rad hand yaw: forearm_roll ~ +-1.75 x yaw, wrist_rotate ~ -+1.1 x yaw
+        # (2026-10-19), so also try seeds along that line.
+        base = list(self._hand_home["joints"])
+        i_roll, i_rot = ARM_JOINTS.index("forearm_roll"), ARM_JOINTS.index("wrist_rotate")
+        seeds = [base]
+        for k in (1.0, 0.5, 1.5):
+            s_ = list(base)
+            s_[i_roll] += 1.75 * yaw * k
+            s_[i_rot] -= 1.1 * yaw * k
+            seeds.append(s_)
+        best, last_code, last_err = None, None, None
+        for seed in seeds:
+            try:
+                req = GetPositionIKRequest()
+                req.ik_request.group_name = "interbotix_arm"
+                req.ik_request.ik_link_name = f"{self.ns}/ee_gripper_link"
+                ps = PoseStamped()
+                ps.header.frame_id = f"{self.ns}/base_link"
+                ps.pose.position = home_pose.position
+                ps.pose.orientation.x, ps.pose.orientation.y, ps.pose.orientation.z, ps.pose.orientation.w = q
+                req.ik_request.pose_stamped = ps
+                req.ik_request.avoid_collisions = False
+                req.ik_request.timeout = rospy.Duration(0.5)
+                req.ik_request.robot_state.joint_state = JointState(name=ARM_JOINTS, position=list(seed))
+                r = self._ik_srv(req)
+            except rospy.ServiceException as e:
+                last_err = str(e)
+                continue
+            last_code = r.error_code.val
+            if r.error_code.val != 1:
+                continue
+            sol = dict(zip(r.solution.joint_state.name, r.solution.joint_state.position))
+            if any(j not in sol for j in ARM_JOINTS):
+                continue
+            cand = [sol[j] for j in ARM_JOINTS]
+            d = max(abs(a - b_) for a, b_ in zip(cand, self.arm.last_target))
+            if best is None or d < best[0]:
+                best = (d, cand)
+            if d <= HAND_TURN_MAX_JOINT_DELTA:
+                break
+        if best is None:
+            return False, dict(ee_xyz(), reason=f"no IK solution for a hand yaw of {yaw:+.2f} rad "
+                                                f"(MoveIt error {last_code}{', ' + last_err if last_err else ''})")
+        dj, target = best
+        if dj > HAND_TURN_MAX_JOINT_DELTA:
+            return False, dict(ee_xyz(), reason=f"IK found only the far wrist branch for a hand yaw of "
+                                                f"{yaw:+.2f} rad (a {dj:.1f} rad joint swing) — not taken")
+        rospy.loginfo("[arm] Turn hand: yaw %+.2f rad (max joint change %.2f rad)", yaw, dj)
+        self.arm.send_joints(target, move_time=move_time if move_time > 0 else 2.0 + 1.8 * dj)
+        self.arm.hold(0.5)
+        return True, dict(ee_xyz(), joints=list(self.arm.last_target))
 
     def shift(self, dx, dy, dz, move_time=1.5, unwind=True):
         """Move the EE by a Cartesian offset from wherever it currently is,

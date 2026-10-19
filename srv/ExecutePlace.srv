@@ -3,6 +3,11 @@
 # more than a perfect placement.
 geometry_msgs/Point place_point  # z is ignored when at_grasp_height is true
 bool at_grasp_height             # put it down at the height it was picked up at
+bool exact                       # place_point is the object's ORIGINAL position, re-expressed in the base
+                                 # frame as it is NOW (x, y, and z = the grip height): use it as given, do
+                                 # not snap it to where the jaws last closed (that point is in the OLD base
+                                 # frame; the base creeps 6-10 cm and yaws a few degrees between a grasp and
+                                 # the end of an inspection, measured 2026-10-19), and place_z = z + clearance
 ---
 bool success
 string message

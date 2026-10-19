@@ -11,6 +11,8 @@
                                          TaskOrchestrator's inspect_object rotation sweep
   ~shift_arm          (ShiftArm)         Cartesian offset from the current EE pose — used
                                          by inspect_object to dodge a nearby obstacle
+  ~turn_hand          (TurnHand)         yaw the hand in place (the held object turns about its
+                                         own axis) — used by inspect_object to show its sides
 
 Independently runnable and testable on its own:
 `rosservice call /locobot/arm/set_arm_pose "pose_name: 'grasp_ready'"`.
@@ -36,14 +38,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from arm_actuators import ARM_JOINTS, ARM_POSES, CAMERA_CLEAR_POSE, ArmActuator, Gripper
 from arm_diagnostics import GraspDiagnostics
 from collision_scene import CollisionScene
-from grasp_executor import GraspExecutor
+from grasp_executor import PLACE_CLEARANCE, GraspExecutor
 from grasp_geometry import FINGER_CLOSE, FINGER_OPEN
 from locobot_prog.srv import (ExecuteGrasp, ExecuteGraspResponse, ExecutePlace,
                               ExecutePlaceResponse, ExecutePregrasp,
                               ExecutePregraspResponse, GetGripperState,
                               GetGripperStateResponse, SetArmPose, SetArmPoseResponse,
                               SetGripper, SetGripperResponse, SetJoint, SetJointResponse,
-                              ShiftArm, ShiftArmResponse, TargetMemory, TargetMemoryRequest)
+                              ShiftArm, ShiftArmResponse, TargetMemory, TargetMemoryRequest,
+                              TurnHand, TurnHandResponse)
 
 # How far short of its commanded close target a finger must stop before the grip
 # counts as holding something. Above joint/controller settling noise, well below
@@ -139,6 +142,7 @@ class ArmNode:
                       self._guard(self._execute_place, ExecutePlaceResponse))
         rospy.Service("~set_joint", SetJoint, self._guard(self._set_joint, SetJointResponse))
         rospy.Service("~shift_arm", ShiftArm, self._guard(self._shift_arm, ShiftArmResponse))
+        rospy.Service("~turn_hand", TurnHand, self._guard(self._turn_hand, TurnHandResponse))
         rospy.loginfo("[arm] Ready.")
 
     def _guard(self, handler, response_class):
@@ -210,7 +214,10 @@ class ArmNode:
 
     def _execute_place(self, req):
         p = req.place_point
-        ok, info = self.executor.place(p.x, p.y, None if req.at_grasp_height else p.z)
+        if req.exact:
+            ok, info = self.executor.place(p.x, p.y, p.z + PLACE_CLEARANCE, exact=True)
+        else:
+            ok, info = self.executor.place(p.x, p.y, None if req.at_grasp_height else p.z)
         return ExecutePlaceResponse(success=ok, message=f"placed at {info['placed_at']}")
 
     def _set_joint(self, req):
@@ -250,6 +257,12 @@ class ArmNode:
         ok, info = self.executor.shift(req.dx, req.dy, req.dz, move_time)
         ee = Point(info.get("x", 0.0), info.get("y", 0.0), info.get("z", 0.0))
         return ShiftArmResponse(success=ok, message=info.get("reason", ""), ee_position=ee)
+
+    def _turn_hand(self, req):
+        ok, info = self.executor.turn_hand(req.yaw, req.move_time)
+        ee = Point(info.get("x", 0.0), info.get("y", 0.0), info.get("z", 0.0))
+        return TurnHandResponse(success=ok, message=info.get("reason", ""), ee_position=ee,
+                                joint_positions=list(info.get("joints", [])))
 
     def run(self):
         rospy.loginfo("[arm] Moving arm to camera-clear pose.")
