@@ -39,6 +39,7 @@ from arm_actuators import ARM_JOINTS, ARM_POSES, CAMERA_CLEAR_POSE, ArmActuator,
 from arm_diagnostics import GraspDiagnostics
 from collision_scene import CollisionScene
 from grasp_executor import PLACE_CLEARANCE, GraspExecutor
+import grasp_geometry as gg
 from grasp_geometry import FINGER_CLOSE, FINGER_OPEN
 from locobot_prog.srv import (ExecuteGrasp, ExecuteGraspResponse, ExecutePlace,
                               ExecutePlaceResponse, ExecutePregrasp,
@@ -47,11 +48,6 @@ from locobot_prog.srv import (ExecuteGrasp, ExecuteGraspResponse, ExecutePlace,
                               SetGripper, SetGripperResponse, SetJoint, SetJointResponse,
                               ShiftArm, ShiftArmResponse, TargetMemory, TargetMemoryRequest,
                               TurnHand, TurnHandResponse)
-
-# How far short of its commanded close target a finger must stop before the grip
-# counts as holding something. Above joint/controller settling noise, well below
-# the half-width of any graspable object.
-GRIP_HELD_MARGIN = 0.003
 
 
 def nan_if_none(value, scale=1.0):
@@ -182,7 +178,15 @@ class ArmNode:
         against, so the old fixed 20 mm threshold is used."""
         pos = self.gripper.position
         ref = self.executor.last_close_target
-        holding = pos > ref + GRIP_HELD_MARGIN if ref is not None else pos * 1000.0 < 20.0
+        if ref is not None:
+            # The same two-finger verdict the grasp uses (grip_verdict): the fingers are
+            # independent joints and a lopsided real grip stops one of them well short of the
+            # other (left 26.4 / right 29.2 mm on a held bottle, 2026-10-20), so comparing only the
+            # left finger with the target called a held bottle "not holding" and cut an
+            # inspection tour short after one view in 2 of 6 runs.
+            holding = gg.grip_verdict(pos, ref, FINGER_OPEN, right_m=self.gripper.right_position)[0]
+        else:
+            holding = pos * 1000.0 < 20.0
         return GetGripperStateResponse(finger_position=pos, holding=holding)
 
     def _execute_pregrasp(self, req):
@@ -259,7 +263,7 @@ class ArmNode:
         return ShiftArmResponse(success=ok, message=info.get("reason", ""), ee_position=ee)
 
     def _turn_hand(self, req):
-        ok, info = self.executor.turn_hand(req.yaw, req.move_time)
+        ok, info = self.executor.turn_hand(req.yaw, req.move_time, req.pitch, req.dx, req.dy, req.dz)
         ee = Point(info.get("x", 0.0), info.get("y", 0.0), info.get("z", 0.0))
         return TurnHandResponse(success=ok, message=info.get("reason", ""), ee_position=ee,
                                 joint_positions=list(info.get("joints", [])))

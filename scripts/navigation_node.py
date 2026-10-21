@@ -25,9 +25,10 @@ import numpy as np
 import rospy
 import tf2_ros
 from sensor_msgs.msg import LaserScan
+from std_srvs.srv import SetBool, SetBoolResponse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import approach
-from base_controller import BaseController
+from base_controller import (BaseController, HOLD_MAX_S, HOLD_RATE_HZ, heading_hold_speed)
 from locobot_prog.srv import (ApproachTarget, ApproachTargetResponse, DriveRelative,
                               DriveRelativeResponse, GetScene, GetTarget)
 from target_state import measured_position
@@ -56,8 +57,14 @@ class NavigationNode:
         self.get_target = rospy.ServiceProxy(f"/{ns}/world_model/get_target", GetTarget)
         self.get_scene = rospy.ServiceProxy(f"/{ns}/world_model/get_scene", GetScene)
 
+        # Heading hold: see base_controller.HOLD_* for why. None = off.
+        self._hold_yaw = None
+        self._hold_until = 0.0
+
         rospy.Service("~drive_relative", DriveRelative, self._handle_drive_relative)
         rospy.Service("~approach_target", ApproachTarget, self._handle_approach_target)
+        rospy.Service("~hold_heading", SetBool, self._handle_hold_heading)
+        rospy.Timer(rospy.Duration(1.0 / HOLD_RATE_HZ), self._hold_tick)
         rospy.loginfo("[nav] Ready (front veto %.2fm)", self.front_veto_m)
 
     def _on_scan(self, msg):
@@ -70,6 +77,44 @@ class NavigationNode:
 
     def front_blocked(self):
         return self.front_dist < self.front_veto_m
+
+    def _handle_hold_heading(self, req):
+        """data=True: keep the heading the base has NOW (odometry yaw) until released; data=False:
+        release. While a drive or turn runs the hold stands aside, and it resumes on the heading it
+        was given, so turn or drive first and call this after."""
+        if req.data:
+            yaw = self.base.yaw()
+            if yaw is None:
+                return SetBoolResponse(success=False, message="no odometry yaw to hold")
+            self._hold_yaw = yaw
+            self._hold_until = rospy.Time.now().to_sec() + HOLD_MAX_S
+            rospy.loginfo("[nav] Holding heading %.2f°", math.degrees(yaw))
+            return SetBoolResponse(success=True, message=f"holding {math.degrees(yaw):.2f} deg")
+        was_on = self._hold_yaw is not None
+        self._hold_yaw = None
+        if was_on:
+            self.base.stop()
+            rospy.loginfo("[nav] Heading hold released")
+        return SetBoolResponse(success=True, message="released")
+
+    def _hold_tick(self, _event):
+        target = self._hold_yaw
+        if target is None:
+            return
+        if rospy.Time.now().to_sec() > self._hold_until:
+            self._hold_yaw = None
+            rospy.logwarn("[nav] Heading hold timed out and released itself")
+            return
+        if not self._lock.acquire(False):       # a drive or turn is running: not now
+            return
+        try:
+            yaw = self.base.yaw()
+            if yaw is None:
+                return
+            err = math.atan2(math.sin(target - yaw), math.cos(target - yaw))
+            self.base.send(0.0, heading_hold_speed(err))
+        finally:
+            self._lock.release()
 
     def _handle_drive_relative(self, req):
         with self._lock:

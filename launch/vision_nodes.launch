@@ -8,6 +8,15 @@
        rosservice call /locobot/task/get_object "target_name: 'bottle'" -->
   <arg name="use_vlm_agent"       default="true"/>
   <arg name="vlm_model"           default="qwen3-vl:2b-instruct"/>
+  <!-- inspect_object: how many hand poses the tour shows (1-7, in priority order), and the size the
+       views are scaled to before they go to the VLM (0 = full 640x480). 7 views at 320x240 suit the 2B model;
+       a larger model (e.g. on the HPC) can take 640x480 so labels and small marks are legible. -->
+  <arg name="inspect_max_views"   default="7"/>
+  <!-- true adds two views with the top of the object tilted toward the camera (the cap). In the simulator
+       the soft grasp-fix weld let a bottle ratchet out of the pads during them, so they are off by default. -->
+  <arg name="inspect_tilt_views"  default="false"/>
+  <arg name="inspect_image_width" default="320"/>
+  <arg name="inspect_image_height" default="240"/>
   <!-- 5 was sized for the old single-tool design (get_object alone did pick
        AND place, "call it again up to 3 times total" per the old prompt). Now
        get_object only holds — a full task needs get_object (itself sometimes
@@ -82,6 +91,8 @@
     ns="$(arg robot_name)">
     <param name="robot_name"    value="$(arg robot_name)"/>
     <param name="target_object" value="$(arg target_object)"/>
+    <param name="inspect_max_views" value="$(arg inspect_max_views)"/>
+    <param name="inspect_tilt_views" value="$(arg inspect_tilt_views)"/>
   </node>
 
   <!-- ── Arm: the only MoveGroupCommander ──────────────────────────────── -->
@@ -117,6 +128,8 @@
     <param name="vlm_model"             value="$(arg vlm_model)"/>
     <param name="max_steps"             value="$(arg max_agent_steps)"/>
     <param name="grasp_min_interval_s"  value="$(arg grasp_min_interval_s)"/>
+    <param name="inspect_image_width"   value="$(arg inspect_image_width)"/>
+    <param name="inspect_image_height"  value="$(arg inspect_image_height)"/>
   </node>
 
   <!-- ── Point camera toward table on startup ─────────────────────────── -->

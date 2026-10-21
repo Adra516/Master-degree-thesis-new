@@ -258,6 +258,37 @@ def planned_width_mm(close_pos, full_close, squeeze=PLANNER_SQUEEZE):
     return jaw_width(float(close_pos) + squeeze) * 1000.0
 
 
+def box_grip_from_width(face_width, squeeze=PLANNER_SQUEEZE):
+    """(opening, close target) finger joint positions for a box whose faces are `face_width` apart.
+
+    The same two formulas grasp_planner.plan_from_points ends with, fed a KNOWN width: open as
+    wide as the planner would (the jaws' own limit for anything wider than ~25 mm), close
+    `squeeze` per finger inside the contact width. planned_width_mm inverts the close target, so
+    the contact gate's room is the real (jaw gap - face width) / 2."""
+    pos = finger_pos_for_width(float(face_width))
+    opening = float(np.clip(pos + 0.022, FINGER_CLOSE + 0.008, FINGER_OPEN))
+    close = float(np.clip(pos - squeeze, FINGER_CLOSE, FINGER_OPEN - 0.005))
+    return opening, close
+
+
+def lateral_offset(aim_xy, hand_xy, quat):
+    """How far `aim_xy` lies to the side of the line the hand would travel straight ahead along.
+
+    The hand's approach axis is its local +x and its jaws close along its local y, both read
+    from `quat` (base_link). Returns (e, (ux, uy)): e is the signed distance from the hand's
+    approach line to the aim point, measured along the closing axis (positive = toward the
+    left finger), and (ux, uy) is that axis as a unit vector in the horizontal plane. Moving
+    the hand by e * (ux, uy) puts the aim point on its approach line."""
+    R = tft.quaternion_matrix(quat)
+    ux, uy = float(R[0, 1]), float(R[1, 1])
+    n = math.hypot(ux, uy)
+    if n < 1e-9:
+        return 0.0, (0.0, 1.0)
+    ux, uy = ux / n, uy / n
+    e = (float(aim_xy[0]) - float(hand_xy[0])) * ux + (float(aim_xy[1]) - float(hand_xy[1])) * uy
+    return e, (ux, uy)
+
+
 def centring_shift(metrics, miss_tol_mm, width_mm, room_fraction=CONTACT_ROOM_FRACTION,
                    margin_mm=-1.0):
     """(dx, dy) in metres that centres the OPEN jaws on the object, or None.

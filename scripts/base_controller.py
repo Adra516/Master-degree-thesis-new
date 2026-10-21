@@ -32,6 +32,25 @@ MAX_TF_MISSES = 60
 TURN_GAIN = 2.0
 MIN_TURN_SPEED = 0.03
 
+# Heading hold (navigation_node ~hold_heading). With the arm out and its waist turned, the base
+# yaws on its own at a steady 0.14-0.22 deg/s (ground truth, 2026-10-21: tea box, waist -7 to
+# -18 deg; the bottle, waist ~0, drifts 0.02 deg/s): 1.2 mm/s sideways at the grasp point, 8 mm
+# over the 7 s of the final approach against 5.5 mm of room a side. Odometry sees that yaw, so
+# a gentle P loop on it holds the heading.
+HOLD_RATE_HZ = 20.0
+HOLD_GAIN = 3.0                       # 1/s: 0.1 deg of error -> 5 mrad/s
+HOLD_MAX_SPEED = 0.03                 # rad/s, far below any turn the base makes on purpose
+HOLD_DEADBAND = math.radians(0.05)
+HOLD_MAX_S = 300.0                    # watchdog: a forgotten hold releases itself
+
+
+def heading_hold_speed(err, gain=HOLD_GAIN, max_speed=HOLD_MAX_SPEED, deadband=HOLD_DEADBAND):
+    """Angular speed (rad/s) that brings a yaw error `err` (target - current, rad) back to zero:
+    proportional, capped at `max_speed`, and zero inside the deadband."""
+    if abs(err) <= deadband:
+        return 0.0
+    return float(np.clip(gain * err, -max_speed, max_speed))
+
 
 class BaseController:
 

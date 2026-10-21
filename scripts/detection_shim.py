@@ -83,7 +83,10 @@ class DetectionShim:
             return
 
         out = DetectionArray()
-        out.header.stamp = rospy.Time.now()
+        # The stamp of the IMAGE the detections come from (the detector adds it), so a consumer
+        # can match the depth frame and the base pose of that moment; now() is only the fallback.
+        image_stamps = [d["stamp"] for d in dets if isinstance(d, dict) and "stamp" in d]
+        out.header.stamp = rospy.Time.from_sec(image_stamps[0]) if image_stamps else rospy.Time.now()
         for d in dets:
             if not (d.get("position_base") and d.get("dims_hwl") and d.get("class_name")):
                 continue

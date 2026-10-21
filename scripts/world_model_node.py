@@ -38,6 +38,7 @@ from geometry_msgs.msg import Point, PoseStamped, Vector3, PointStamped
 from moveit_msgs.srv import GetPositionIK, GetPositionIKRequest
 from sensor_msgs.msg import CameraInfo, Image, JointState
 from std_msgs.msg import Float64
+from std_srvs.srv import SetBool
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import camera_aim
 import footprint
@@ -59,7 +60,7 @@ from zones import ARM_GRASP_DIST, TABLE_DEPTH_M, ZONE_BLOCKED, ZONE_GRASP_READY
 from locobot_prog.msg import CollisionBox, DetectionArray, TargetState
 from locobot_prog.srv import (ApproachTarget, ApproachTargetRequest,
                               ApproachTargetResponse, DriveRelative, ExecuteGrasp, ExecutePlace,
-                              ExecutePregrasp, GetObject, GetObjectResponse,
+                              ExecutePregrasp, GetGripperState, GetObject, GetObjectResponse,
                               GetScene, GetSceneResponse, GetTarget,
                               GetTargetResponse, InspectObject, InspectObjectResponse,
                               NavigateTo, NavigateToResponse,
@@ -90,22 +91,25 @@ SHIFT_FOLLOW_XY_MM = 10.0
 # the tilt re-take measures it (+26 mm) and the leg starts on an already-flipped base
 # (2026-10-18: 2/2 clean lifts when parked there). See PARK_GRASP_* below. The earlier
 # over-the-top "pre-tip" was removed 2026-10-17: it ended the pre-grasp above the target.
-# DEFAULT 0 again (2026-10-14 evening). Allowing 40 deg did give the right 45 mm width
-# for a turned tea box, but a yawed gripper at the standoff is hard for this arm (the
-# approach must be realised with forearm_roll/wrist_rotate at a near-zero wrist angle):
-# the first pre-grasp or its tilt re-take was blocked (33-63 mm off) in 5/5 launches and
-# 0/5 tea boxes were held, against 1/5 with the axis locked. The real fault the 40 was
-# aimed at -- the close sized for the corner span -- is fixed in the planner instead
-# (seated_width). Set ~grasp_max_axis_dev_deg to experiment.
 # How far the depth planner may turn the jaws' closing axis away from "perpendicular to
-# the line to the object" to close on a box's real faces. It was 0 (carried over from the
-# port, no recorded reason): a 45 mm tea box sitting 8 deg off measured 51 mm across its
-# corners, the close target was sized for 51 and barely squeezed the 45 mm faces, and the
-# planner itself predicted it would turn 8 deg in the jaws. The planner already scores the
-# turn, the clearance and a small penalty per degree of deviation, so a round object
-# (bottle, can) still gets 0 deg. 40 covers any rotation of a square footprint up to the
-# 45 deg where the other face pair takes over.
+# the line to the object", so that they close on a box's real faces.
+#   * 0 for a ROUND object (bottle, can: any angle meets the same curved surface) and for
+#     anything not in the catalogue.
+#   * GRASP_BOX_MAX_AXIS_DEV_DEG for a catalogued object that is NOT round (the tea box).
+# Why (2026-10-21, ground truth): the tea box sits 3-16 deg off the approach, so across the
+# jaws it is 47-56 mm wide against the 56 mm the open pads leave (0.2-4.5 mm a side), and
+# a pad that meets a corner turns the box 40-50 deg. Aligned it is its true 45 mm (5.5 mm
+# a side). The hand was within 3 deg of the faces in every pre-grasp with the axis free, and
+# those pre-grasps verified at 2.2-2.7 mm. The 40 deg tried on 2026-10-14 was blocked (33-63 mm
+# off in 5/5 launches); 25 deg turns the hand about its own point through the multi-seed
+# wrist and was not. Override with ~grasp_max_axis_dev_deg (applies to every object).
 GRASP_MAX_AXIS_DEV_DEG = 0.0
+GRASP_BOX_MAX_AXIS_DEV_DEG = 25.0
+# A catalogued box's face width is a fact; the planner's width is a measurement from one side
+# and read 18-51 mm for the same 45 mm tea box. Past this difference the catalogue wins for
+# the gripper opening and the close target (a 19 mm reading closed the jaws to 14.6 mm and
+# threw the box out; the contact gate's room is computed from the same target).
+BOX_WIDTH_TRUST_M = 0.006
 
 RETAKE_REAIM_MAX_MM = 65.0     # the descent re-aim limit (/arm/reaim_max_mm) for a pick whose
                                # tilt-corrected pre-grasp was blocked and fell back to the original
@@ -175,11 +179,11 @@ def inspect_offsets_for(height):
 # its own); the bottle's other neighbours (tea_box/can_coke) are 0.25m+ away
 # and were never observed to collide.
 INSPECT_OBSTACLE_CLEAR_M = 0.20
+INSPECT_MAX_S = 110.0         # time budget of the inspection tour (s)
 PLACE_MAX_SHIFT_M = 0.25      # a reprojected original position farther than this from the grasp point is not trusted
 PLACE_MIN_REACH_M = 0.33      # the arm's own reach window for a placement (grasp_executor REACH_MIN/MAX)
 PLACE_MAX_REACH_M = 0.55
 PLACE_COMFORT_MAX_M = 0.53    # farther than this the base is moved back first (it turns to face the spot when >3 deg off)
-PLACE_BEARING_TOL = math.radians(3.0)
 PLACE_PARK_DIST_M = 0.50      # where the base parks for a pick (reach.py), so where it returns to
 PLACE_MAX_DRIVE_M = 0.15
 PLACE_SETTLE_S = 1.5
@@ -268,10 +272,15 @@ class WorldModelNode:
         return best, abs((best.header.stamp - stamp).to_sec())
 
     def _camera_to_base(self, header):
-        """4x4 transform from the depth frame to base_link AT THE FRAME'S STAMP
-        (a Time(0) lookup would use wherever the camera is now)."""
-        t = self.tf_buffer.lookup_transform(f"{self.ns}/base_link", header.frame_id,
-                                            header.stamp, rospy.Duration(0.3)).transform
+        """4x4 transform from the depth frame to base_link as it is NOW, with the camera taken
+        AT THE FRAME'S STAMP (a Time(0) lookup would use wherever the camera is now).
+
+        Through odom, so the object the planner finds is placed in the frame the arm is about to
+        work in: after the base moved between that image and now (a park correction), the
+        old base frame put the grasp point where it had been, by the length of the move."""
+        t = self.tf_buffer.lookup_transform_full(
+            f"{self.ns}/base_link", rospy.Time(0), header.frame_id, header.stamp,
+            f"{self.ns}/odom", rospy.Duration(0.3)).transform
         q, p = t.rotation, t.translation
         T = rotations.quaternion_matrix([q.x, q.y, q.z, q.w])
         T[:3, 3] = [p.x, p.y, p.z]
@@ -502,6 +511,14 @@ class TaskOrchestrator:
         self.ns = ns
         self.grasp_dist = float(rospy.get_param("~arm_grasp_dist_m", ARM_GRASP_DIST))
         self._lock = threading.Lock()          # one task at a time
+        # Own copy of the object catalogue (the same file the WorldModelNode loads): the
+        # grasp plan needs to know whether the target is round and what its true size is.
+        try:
+            default_catalog = rospkg.RosPack().get_path("locobot_prog") + "/config/objects.yaml"
+        except rospkg.ResourceNotFound:       # e.g. an offline test with no ROS package path
+            default_catalog = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                           "..", "config", "objects.yaml")
+        self.catalog = ObjectCatalog.from_yaml(rospy.get_param("~catalog", default_catalog))
 
         def proxy(name, srv_type):
             name = f"/{ns}/{name}"
@@ -517,6 +534,7 @@ class TaskOrchestrator:
         self.plan_grasp = proxy("world_model/plan_grasp", PlanGrasp)
         self.approach = proxy("navigation/approach_target", ApproachTarget)
         self.drive_relative = proxy("navigation/drive_relative", DriveRelative)
+        self.hold_heading = proxy("navigation/hold_heading", SetBool)
         self.set_arm_pose = proxy("arm/set_arm_pose", SetArmPose)
         self.execute_pregrasp = proxy("arm/execute_pregrasp", ExecutePregrasp)
         self.execute_grasp = proxy("arm/execute_grasp", ExecuteGrasp)
@@ -524,6 +542,7 @@ class TaskOrchestrator:
         self.set_joint = proxy("arm/set_joint", SetJoint)
         self.shift_arm = proxy("arm/shift_arm", ShiftArm)
         self.turn_hand = proxy("arm/turn_hand", TurnHand)
+        self.get_gripper_state = proxy("arm/get_gripper_state", GetGripperState)
 
         # Held-object state
         self._held = None
@@ -669,9 +688,15 @@ class TaskOrchestrator:
                                  f"picking anything else."))
             try:
                 ctx = self._navigate(req.target_name)
-                return self._pick(req.target_name, ctx)
+                r = self._pick(req.target_name, ctx)
             except _Failed as f:
                 return GetObjectResponse(success=False, **_only(f.fields, GetObjectResponse))
+            except Exception:
+                self._hold(False)
+                raise
+            if self._held is None:
+                self._hold(False)              # nothing in the gripper: nothing to keep steady
+            return r
 
     def _handle_inspect_object(self, req):
         with self._lock:
@@ -685,6 +710,7 @@ class TaskOrchestrator:
             views, desc = self._rotate_and_capture(held)
             point, exact = self._place_point(held)
             placed = self.execute_place(place_point=point, at_grasp_height=not exact, exact=exact)
+            self._hold(False)
             try:
                 self.target_memory(action=TargetMemoryRequest.FORGET)
             except rospy.ServiceException:
@@ -731,18 +757,25 @@ class TaskOrchestrator:
             return fallback
         dist, bearing = math.hypot(ref[0], ref[1]), math.atan2(ref[1], ref[0])
         if dist > PLACE_COMFORT_MAX_M:       # sideways offsets are the arm's waist; only distance needs the base
-            turn = bearing if abs(bearing) > PLACE_BEARING_TOL else 0.0
-            drive = max(-PLACE_MAX_DRIVE_M, min(PLACE_MAX_DRIVE_M, dist - PLACE_PARK_DIST_M))
+            # A straight drive only: turning to face the spot is not needed (the waist takes the
+            # sideways offset) and the closed-loop turn ran to its 20 s deadline every time
+            # (13 degrees in 20 s, 2026-10-20) while the bottle hung in the gripper. The drive
+            # brings the straight-line distance to the park distance: the point's x moves by
+            # d with hypot(x - d, y) = PLACE_PARK_DIST_M.
+            ahead = math.sqrt(max(0.0, PLACE_PARK_DIST_M ** 2 - ref[1] ** 2))
+            drive = max(-PLACE_MAX_DRIVE_M, min(PLACE_MAX_DRIVE_M, ref[0] - ahead))
             rospy.loginfo("[task] inspect_object: the base has crept — the original position is now "
-                          "%.3fm away at %+.1f deg; turning %+.1f deg and driving %+.3fm back",
-                          dist, math.degrees(bearing), math.degrees(turn), drive)
+                          "%.3fm away at %+.1f deg; driving %+.3fm straight back",
+                          dist, math.degrees(bearing), drive)
+            self._hold(False)                  # the drive-back moves the base
             try:
-                r = self.drive_relative(turn=turn, distance=drive, max_angular=0.0, max_linear=0.0)
+                r = self.drive_relative(turn=0.0, distance=drive, max_angular=0.0, max_linear=0.0)
                 if not r.success:
                     rospy.logwarn("[task] inspect_object: the base move was refused: %s", r.message)
             except rospy.ServiceException as e:
                 rospy.logwarn("[task] inspect_object: the base move failed: %s", e)
             rospy.sleep(PLACE_SETTLE_S)
+            self._hold(True)                   # and hold where it ended up
             ref = reproject()
             if ref is None:
                 return fallback
@@ -914,57 +947,79 @@ class TaskOrchestrator:
         return self._rotate_and_capture_wrist(held)
 
     def _rotate_and_capture_yaw(self, held):
-        """Show the held object from several sides with the arm out of the way.
+        """Show the held object from several sides and angles with the arm out of the way.
 
         The camera sits right above the arm base, so an object held in front is seen past
         the elbow and forearm (measured 2026-10-19: even aimed at it, the forearm covers the
         middle of the frame, and pulling the object closer makes it worse). Yawing the hand
         about the vertical through the held point (srv/TurnHand) turns the object about its
         own axis AND swings the forearm to one side; at +-0.5 rad the whole bottle is clear
-        in the frame. The head is aimed at the object's centre before every capture. Never
-        raises: an unreachable yaw is skipped, and the hand is always returned to where it
+        in the frame. A tour of such poses (camera_aim.INSPECT_POSES: turns to both sides, a
+        closer one, and views with the top tilted toward the camera) is walked in the order of
+        camera_aim.inspect_tour, returning to the start between sides, and the head is aimed at
+        the object's centre before every capture.
+
+        Bounded on purpose: `~inspect_max_views` poses at most, and `~inspect_max_s` seconds
+        (a hold of about eight poses lost the bottle in one run; the tour stops early rather
+        than risk it), and it also stops when the gripper no longer reports holding. Never
+        raises: an unreachable pose is skipped, and the hand is always returned to where it
         started before the caller places the object."""
         target_name = held["target_name"]
         self._dodge_nearby_obstacle(held)
         try:
-            start = self.turn_hand(yaw=0.0, move_time=0.0)      # no sequence open: a pure read
+            start = self.turn_hand(yaw=0.0, pitch=0.0, dx=0.0, dy=0.0, dz=0.0, move_time=0.0)  # no sequence open: a pure read
         except rospy.ServiceException as e:
             rospy.logwarn("[task] inspect_object: turn_hand unavailable: %s", e)
             return [], ""
         if not start.success:
             return [], ""
-        captured = []                                           # (yaw, frame)
-        reached = []
+        include_tilt = bool(rospy.get_param("~inspect_tilt_views", False))
+        max_views = int(rospy.get_param("~inspect_max_views", len(camera_aim.INSPECT_POSES)))
+        max_s = float(rospy.get_param("~inspect_max_s", INSPECT_MAX_S))
+        t_start = time.time()
+        views, labels = [], []
         try:
-            for yaw in camera_aim.inspect_order():
-                if yaw == 0.0:
-                    self.turn_hand(yaw=0.0, move_time=0.0)       # back to the exact start joints
+            for pose in camera_aim.inspect_tour(max_views, include_tilt=include_tilt):
+                if pose is None:
+                    self.turn_hand(yaw=0.0, pitch=0.0, dx=0.0, dy=0.0, dz=0.0, move_time=0.0)   # exactly back to the start
                     continue
-                r = self.turn_hand(yaw=yaw, move_time=0.0)
+                if time.time() - t_start > max_s:
+                    rospy.logwarn("[task] inspect_object: %.0f s budget used — stopping the tour "
+                                  "after %d view(s)", max_s, len(views))
+                    break
+                r = self.turn_hand(yaw=pose.yaw, pitch=pose.pitch, dx=pose.dx, dy=0.0, dz=pose.dz,
+                                   move_time=0.0)
                 if not r.success:
-                    rospy.loginfo("[task] inspect_object: hand yaw %+.2f skipped: %s", yaw, r.message)
+                    rospy.loginfo("[task] inspect_object: pose '%s' skipped: %s", pose.label, r.message)
                     continue
                 ee = (r.ee_position.x, r.ee_position.y, r.ee_position.z)
-                centre = camera_aim.held_centre(ee, held.get("grasp_above_table"), held.get("height"))
+                centre = camera_aim.held_centre(ee, held.get("grasp_above_table"), held.get("height"),
+                                                pose.pitch)
                 pan, tilt = self._aim_camera(centre)
                 rospy.sleep(INSPECT_STEP_SETTLE_S)
                 if self._latest_color is not None:
-                    captured.append((yaw, self._latest_color))
-                reached.append(yaw)
-                rospy.loginfo("[task] inspect_object: yaw %+.2f rad, camera pan %+.2f tilt %+.2f", yaw, pan, tilt)
+                    views.append(self._latest_color)
+                    labels.append(pose.label)
+                rospy.loginfo("[task] inspect_object: view %d '%s', camera pan %+.2f tilt %+.2f",
+                              len(views), pose.label, pan, tilt)
+                try:
+                    if not self.get_gripper_state().holding:
+                        rospy.logwarn("[task] inspect_object: the gripper no longer reports holding "
+                                      "— ending the tour")
+                        break
+                except rospy.ServiceException:
+                    pass
         finally:
             try:
-                self.turn_hand(yaw=0.0, move_time=0.0)           # no-op when already back
+                self.turn_hand(yaw=0.0, pitch=0.0, dx=0.0, dy=0.0, dz=0.0, move_time=0.0)   # no-op when already back
             except rospy.ServiceException:
                 pass
             self._restore_camera()
-        captured.sort(key=lambda c: c[0])
-        views = [f for _, f in captured]
         if not views:
             return [], ""
-        desc = (f"Turned '{target_name}' in place through {len(views)} view(s) "
-                f"(hand yaw {min(reached):+.2f} to {max(reached):+.2f} rad) with the camera aimed "
-                f"at it, for inspection.")
+        listing = "; ".join(f"{i + 1}) {lab}" for i, lab in enumerate(labels))
+        desc = (f"Showed '{target_name}' in {len(views)} view(s) with the camera aimed at it, in this "
+                f"order: {listing}.")
         return views, desc
 
     # ── Steps ────────────────────────────────────────────────────────────────
@@ -1111,7 +1166,8 @@ class TaskOrchestrator:
         #    retracts the arm, so the base can be corrected and it can retry once.
         # The plan is chosen once per attempt and reused for this attempt's
         # execute_grasp call below — NOT recomputed there (see _choose_plan).
-        plan_msg, tz = self._choose_plan(st, pos, dims, grasp_axis, tz, orientation)
+        plan_msg, tz = self._choose_plan(st, pos, dims, grasp_axis, tz, orientation,
+                                          target_name=target_name)
         # 5b. PARK DISTANCE, judged from the planner's grasp point (see PARK_GRASP_*):
         #     one straight drive to bring it into the window, then measure and plan again.
         gd = math.hypot(plan_msg.grasp_point.x, plan_msg.grasp_point.y)
@@ -1134,9 +1190,13 @@ class TaskOrchestrator:
                 pos = [round(p[0], 3), round(p[1], 3)]
             self._remember(TargetMemoryRequest.MEASURE)
             scene_obstacles = list(self.get_scene(target_name=target_name).obstacles)
-            plan_msg, tz = self._choose_plan(st, pos, dims, grasp_axis, tz, orientation)
+            plan_msg, tz = self._choose_plan(st, pos, dims, grasp_axis, tz, orientation,
+                                          target_name=target_name)
             rospy.loginfo("[task] After the park correction: grasp point %.3fm from the base",
                           math.hypot(plan_msg.grasp_point.x, plan_msg.grasp_point.y))
+        # The base is parked: hold its heading from here through the lift, and through the
+        # inspection until the object is put down (released in the handlers below).
+        self._hold(True)
         pre, failures, followed, reaim_widened = None, 0, False, False
         retake_blocked, saved = False, None
         while True:
@@ -1190,10 +1250,12 @@ class TaskOrchestrator:
             if failures == 2:
                 break
             rospy.sleep(1.2)
+            self._hold(False)                  # the correction turns/drives the base
             r = self._approach(target_name, standoff, ctx["table_near_x"],
                                ApproachTargetRequest.CORRECT)
             if not r.success:
                 break
+            self._hold(True)                   # hold the corrected heading
             pos = [round(r.target.x, 3), round(r.target.y, 3)]
             self._remember(TargetMemoryRequest.MEASURE)   # re-prime here
             # The base moved, so what was measured before no longer applies.
@@ -1203,7 +1265,8 @@ class TaskOrchestrator:
             # not the pre-correction one the original st still holds.
             st = self._wait_in_frame(target_name,
                                      self.get_target(target_name=target_name).state)
-            plan_msg, tz = self._choose_plan(st, pos, dims, grasp_axis, tz, orientation)
+            plan_msg, tz = self._choose_plan(st, pos, dims, grasp_axis, tz, orientation,
+                                          target_name=target_name)
             rospy.loginfo("[task] Re-positioned for pre-grasp retry: (%.3f, %.3f)", *pos)
         if not pre.success:
             return GetObjectResponse(
@@ -1290,7 +1353,54 @@ class TaskOrchestrator:
 
     # ── Grasp planning ───────────────────────────────────────────────────────
 
-    def _choose_plan(self, st, pos, dims, grasp_axis, tz, orientation=None):
+    def _hold(self, on):
+        """Keep the base's heading (navigation ~hold_heading) from now on, or release it. The base
+        yaws on its own while the arm is out and turned (see base_controller.HOLD_*), which moved
+        the target 8 mm sideways during the last seconds of the approach. Never raises: a base that
+        cannot hold is the situation before this existed."""
+        try:
+            r = self.hold_heading(data=bool(on))
+            if on and not r.success:
+                rospy.logwarn("[task] Heading hold refused: %s", r.message)
+        except rospy.ServiceException as e:
+            rospy.logwarn("[task] Heading hold %s failed: %s", "on" if on else "release", e)
+
+    def _box_key(self, target_name):
+        """Catalogue key of a catalogued, NON-round target (a cuboid like the tea box), else None."""
+        key = self.catalog.key_for_name(target_name) if target_name else None
+        if (key is None or self.catalog.is_round(key)
+                or self.catalog.objects[key].get("role") == "surface"
+                or self.catalog.size(key) is None):
+            return None
+        return key
+
+    def _axis_dev_deg(self, target_name):
+        """How far the planner may turn the closing axis for this target (see GRASP_BOX_*)."""
+        override = rospy.get_param("~grasp_max_axis_dev_deg", None)
+        if override is not None:
+            return float(override)
+        return GRASP_BOX_MAX_AXIS_DEV_DEG if self._box_key(target_name) else GRASP_MAX_AXIS_DEV_DEG
+
+    def _trust_box_width(self, plan_msg, target_name, planned_width):
+        """For a catalogued box, replace a measured width that disagrees with the catalogue by the
+        catalogue's face width: the opening and the close target (and so the contact gate's room)
+        then follow the real box instead of one camera view of it. Round objects are untouched
+        (a bottle's neck is narrower than its catalogue size, and that is what is wanted)."""
+        key = self._box_key(target_name)
+        if key is None:
+            return plan_msg
+        sx, sy, _ = self.catalog.size(key)
+        face = min(sx, sy)
+        if abs(planned_width - face) <= BOX_WIDTH_TRUST_M:
+            return plan_msg
+        opening, close = gg.box_grip_from_width(face)
+        rospy.loginfo("[task] Planned width %.0f mm disagrees with the %s's %.0f mm faces — "
+                      "opening %.1f mm and closing to %.1f mm from the catalogue width",
+                      planned_width * 1000, key, face * 1000, opening * 1000, close * 1000)
+        plan_msg.gripper_open, plan_msg.gripper_close, plan_msg.full_close = opening, close, False
+        return plan_msg
+
+    def _choose_plan(self, st, pos, dims, grasp_axis, tz, orientation=None, target_name=None):
         """(plan, table_z): the grasp to execute — the depth-image planner's measurement of this
         specific object's real shape when it can support one, else the bbox-
         centre baseline. Never worse than the baseline — a planner that is
@@ -1315,8 +1425,7 @@ class TaskOrchestrator:
                                     size=size_from_dims_hwl(dims) if dims else Vector3(),
                                     table_z=tz,
                                     max_axis_deviation=math.radians(
-                                        rospy.get_param("~grasp_max_axis_dev_deg",
-                                                        GRASP_MAX_AXIS_DEV_DEG)))
+                                        self._axis_dev_deg(target_name)))
             except rospy.ServiceException as e:
                 rospy.logwarn("[task] Grasp planner call failed: %s — using baseline", e)
         else:
@@ -1333,7 +1442,7 @@ class TaskOrchestrator:
             rospy.loginfo("[task] Grasp plan from the DEPTH PLANNER: %s "
                           "(width %.0fmm, turn %.0f°)", r.reason, r.width * 1000,
                           math.degrees(r.seat_turn))
-            plan_msg, source = r.plan, "planner"
+            plan_msg, source = self._trust_box_width(r.plan, target_name, r.width), "planner"
             # Re-prime the odometry cache with THIS measurement: it's real
             # geometry from the actual band picked
             # The contact-check gate compares its commanded point against

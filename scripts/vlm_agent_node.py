@@ -97,6 +97,9 @@ class VlmAgentNode:
         self.target_object = rospy.get_param("~target_object", "bottle")
         self.vlm_model = rospy.get_param("~vlm_model", "qwen3-vl:2b-instruct")
         self.max_steps = int(rospy.get_param("~max_steps", 20))
+        # Size the inspection views are scaled to for the model (0 = leave them at full size).
+        self.inspect_w = int(rospy.get_param("~inspect_image_width", 320))
+        self.inspect_h = int(rospy.get_param("~inspect_image_height", 240))
         self._interval = float(rospy.get_param("~grasp_min_interval_s", 5.0))
         self._last_call_ts = 0.0
 
@@ -186,10 +189,11 @@ class VlmAgentNode:
         return out
 
     def inspect_object(self) -> dict:
-        """Rotate the currently-held object (from a prior get_object) through a few
-        angles so you can see it, then ALWAYS place it back down — whether or not you
-        learned what you needed. Returns one feedback image per angle; look at all of
-        them before answering. Call update_plan afterwards to record what you found.
+        """Show the currently-held object (from a prior get_object) from several sides and
+        angles (turned left and right, closer, and with its top tilted toward the camera),
+        then ALWAYS place it back down — whether or not you learned what you needed. Returns
+        one image per view, in the order the description lists them; look at all of them
+        before answering. Call update_plan afterwards to record what you found.
         Returns:
             dict with success, n_views, description.
         """
@@ -199,7 +203,7 @@ class VlmAgentNode:
             r = self._inspect_object()
         except rospy.ServiceException as e:
             return {"success": False, "description": f"inspect_object failed: {e}"}
-        images = [self._encode(self._to_bgr(v), width=320, height=240) for v in r.views]
+        images = [self._encode(self._to_bgr(v), width=self.inspect_w, height=self.inspect_h) for v in r.views]
         self._pending_images = [i for i in images if i is not None]
         return {"success": r.success, "n_views": len(r.views), "description": r.description}
 

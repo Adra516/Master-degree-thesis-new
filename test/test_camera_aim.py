@@ -51,10 +51,46 @@ def test_held_centre_is_below_the_hand_by_the_grip_height_minus_half_the_object(
     assert ca.held_centre((0.5, 0.0, 0.63), 0.05, 0.25)[2] == 0.63
 
 
-def test_inspect_order_goes_out_one_side_returns_then_the_other_side():
-    assert ca.inspect_order() == [-0.35, -0.5, 0.0, 0.35, 0.5, 0.0]
-    assert ca.inspect_order((0.5,)) == [0.5, 0.0]
-    assert ca.inspect_order((-0.5,)) == [-0.5, 0.0]
+def _t(tour):
+    return [(p.yaw, p.pitch, p.dx) if p else None for p in tour]
+
+
+def test_the_tour_visits_each_side_from_the_smallest_turn_out_returning_home_between_sides():
+    tour = _t(ca.inspect_tour())
+    assert tour == [(-0.35, 0.0, 0.0), (-0.4, -0.3, 0.0), (-0.5, 0.0, 0.0), None,
+                    (0.35, 0.0, 0.0), (0.4, -0.3, 0.0), (0.5, 0.0, -0.06), (0.5, 0.0, 0.0), None]
+
+
+def test_the_tilted_top_poses_are_dropped_unless_asked_for():
+    plain = [p for p in ca.inspect_tour(include_tilt=False) if p]
+    assert len(plain) == 5 and all(abs(p.pitch) < 1e-9 for p in plain)
+    assert len([p for p in ca.inspect_tour(include_tilt=True) if p]) == 7
+
+
+def test_a_view_cap_keeps_the_highest_priority_poses():
+    assert _t(ca.inspect_tour(2)) == [(-0.5, 0.0, 0.0), None, (0.5, 0.0, 0.0), None]
+    assert _t(ca.inspect_tour(1)) == [(-0.5, 0.0, 0.0), None]
+    assert ca.inspect_tour(0) == []
+    assert len([p for p in ca.inspect_tour() if p]) == len(ca.INSPECT_POSES)
+
+
+def test_every_tour_ends_back_at_the_start():
+    for n in range(0, 8):
+        tour = ca.inspect_tour(n)
+        assert not tour or tour[-1] is None
+
+
+def test_poses_in_the_tour_stay_inside_what_was_measured_reachable():
+    # yaw <= 0.5, pitch <= 0 (the opposite tilt had no IK solution), never higher than the start
+    for p in ca.INSPECT_POSES:
+        assert abs(p.yaw) <= 0.5 and p.pitch <= 0.0 and p.dz <= 0.0 and p.dx <= 0.0
+
+
+def test_a_hand_pitch_swings_the_held_centre_about_the_held_point():
+    flat = ca.held_centre((0.5, 0.0, 0.63), 0.20, 0.25, pitch=0.0)
+    tipped = ca.held_centre((0.5, 0.0, 0.63), 0.20, 0.25, pitch=-0.3)    # top toward the camera
+    assert tipped[0] > flat[0] and tipped[2] > flat[2]                    # bottom swings away, centre rises
+    assert abs(math.hypot(tipped[0] - 0.5, tipped[2] - 0.63) - 0.075) < 1e-9   # same distance from the hand
 
 
 def test_head_path_starts_at_the_start_ends_on_the_target_and_is_monotone():

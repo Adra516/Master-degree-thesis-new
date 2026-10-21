@@ -7,11 +7,20 @@
 # object in place). Measured 2026-10-19: +-0.5 rad is solvable for a held bottle,
 # +-0.9 is not (NO_IK_SOLUTION).
 #
-# yaw = 0 returns to EXACTLY the joints the first call started from and ends the
-# sequence; with no sequence open it is a pure read (no motion), which is how a caller
-# learns where the hand is. Every non-zero yaw is relative to that same starting pose,
-# never cumulative.
-float64 yaw             # rad about +z of base_link
+# A turn can also tilt the hand (pitch) and move the held point a little (dx/dy/dz), so one
+# call is a general "show the held object from over there" pose. Everything is relative to
+# the pose the sequence started from, never cumulative.
+#
+# all of yaw, pitch, dx, dy, dz = 0 returns to EXACTLY the joints the first call started from
+# and ends the sequence; with no sequence open it is a pure read (no motion), which is how a
+# caller learns where the hand is.
+float64 yaw             # rad about +z of base_link, through the held point
+float64 pitch           # rad about the hand's own lateral axis, through the held point; + swings
+                        # the object's far end toward the robot (cap away from the camera, base
+                        # toward it), - swings the cap toward the camera
+float64 dx              # m, offset of the held point from the start, base_link
+float64 dy
+float64 dz
 float64 move_time       # s; <= 0 scales with the joint travel
 ---
 bool success

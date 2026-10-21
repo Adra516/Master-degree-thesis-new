@@ -67,6 +67,7 @@ def _orchestrator(obstacles=()):
     SERVICE_HANDLERS["execute_place"] = lambda **kw: NS(success=True, message="placed")
     SERVICE_HANDLERS["target_memory"] = lambda **kw: NS(ok=False, position=NS(x=0.0, y=0.0, z=0.0))
     SERVICE_HANDLERS["drive_relative"] = lambda **kw: NS(success=True, message="")
+    SERVICE_HANDLERS["hold_heading"] = lambda **kw: NS(success=True, message="")
     SERVICE_HANDLERS["get_scene"] = lambda **kw: NS(obstacles=list(obstacles))
     SERVICE_HANDLERS["shift_arm"] = lambda **kw: NS(
         success=True, message="", ee_position=NS(x=0.0, y=0.0, z=0.0))
@@ -235,17 +236,19 @@ def test_inspect_offsets_floor_and_unknown_height_fallback():
     assert wmn.inspect_offsets_for(-0.1) == full
 
 
-def _hand_fake(unreachable=()):
-    """turn_hand fake: records the yaws asked for; `unreachable` yaws have no IK solution."""
+def _hand_fake(unreachable=(), holding=True):
+    """turn_hand fake: records (yaw, pitch, dx, dz) asked for; `unreachable` poses (yaw, pitch, dx)
+    have no IK solution. Also fakes the gripper state."""
     asked = []
 
-    def turn_hand(yaw=0.0, move_time=0.0):
-        asked.append(yaw)
-        if yaw in unreachable:
+    def turn_hand(yaw=0.0, pitch=0.0, dx=0.0, dy=0.0, dz=0.0, move_time=0.0):
+        asked.append((yaw, pitch, dx, dz))
+        if (yaw, pitch, dx) in unreachable:
             return NS(success=False, message="no IK solution", ee_position=NS(x=0, y=0, z=0), joint_positions=[])
         return NS(success=True, message="", ee_position=NS(x=0.50, y=0.02, z=0.63), joint_positions=[0.0] * 6)
 
     SERVICE_HANDLERS["turn_hand"] = turn_hand
+    SERVICE_HANDLERS["get_gripper_state"] = lambda **kw: NS(finger_position=0.028, holding=holding)
     return asked
 
 
@@ -253,36 +256,102 @@ def _held():
     return {"target_name": "bottle", "pos": [0.42, 0.01], "height": 0.25, "grasp_above_table": 0.20}
 
 
-def test_inspect_by_hand_yaw_turns_each_side_returns_home_and_places():
+HOME = (0.0, 0.0, 0.0, 0.0)
+
+
+def test_inspect_by_hand_tour_visits_each_pose_returns_home_between_sides_and_places():
+    node = _orchestrator()
+    PARAMS["~inspect_mode"] = "yaw"
+    PARAMS["~inspect_tilt_views"] = True
+    asked = _hand_fake()
+    node._held = _held()
+    r = node._handle_inspect_object(NS())
+    assert r.success is True
+    assert len(r.views) == 7, r.views                       # every pose of camera_aim.INSPECT_POSES
+    assert asked[0] == HOME                                 # the first call is the pure read
+    assert asked[1:4] == [(-0.35, 0.0, 0.0, 0.0), (-0.4, -0.3, 0.0, 0.0), (-0.5, 0.0, 0.0, 0.0)]
+    assert asked[4] == HOME                                 # back to the start between the sides
+    assert asked[5] == (0.35, 0.0, 0.0, 0.0) and (0.4, -0.3, 0.0, 0.0) in asked and (0.5, 0.0, -0.06, 0.0) in asked
+    assert asked[-1] == HOME and asked[-2] == HOME          # and exactly home at the end
+    assert not [1 for key, _ in CALLS if key == "set_joint"], "the wrist sweep must not run"
+    assert len([1 for key, _ in CALLS if key == "execute_place"]) == 1 and node._held is None
+    assert "1) turned 20 degrees to the left" in r.description and "3) turned 29 degrees to the left" in r.description, r.description
+    assert "top tilted toward the camera" in r.description, r.description
+
+
+def test_the_default_tour_has_no_tilted_top_views():
+    """Opt-in: in the simulator the tilted-top poses made the weld let the bottle ratchet out."""
     node = _orchestrator()
     PARAMS["~inspect_mode"] = "yaw"
     asked = _hand_fake()
     node._held = _held()
     r = node._handle_inspect_object(NS())
-    assert r.success is True
-    assert len(r.views) == 4, r.views
-    # one side outward, back to the start, the other side, back to the start; first call is the read
-    assert asked == [0.0, -0.35, -0.5, 0.0, 0.35, 0.5, 0.0, 0.0], asked
-    assert not [1 for key, _ in CALLS if key == "set_joint"], "the wrist sweep must not run"
-    place_calls = [kw for key, kw in CALLS if key == "execute_place"]
-    assert len(place_calls) == 1 and node._held is None
-    assert "hand yaw -0.50 to +0.50" in r.description, r.description
+    assert len(r.views) == 5, r.views
+    assert all(pitch == 0.0 for (_, pitch, _, _) in asked), asked
+    assert "tilted" not in r.description, r.description
+
+
+def test_inspect_by_hand_tour_respects_the_view_cap():
+    node = _orchestrator()
+    PARAMS["~inspect_mode"] = "yaw"
+    PARAMS["~inspect_max_views"] = 2
+    asked = _hand_fake()
+    node._held = _held()
+    r = node._handle_inspect_object(NS())
+    assert len(r.views) == 2, r.views
+    moves = [a for a in asked[1:] if a != HOME]
+    assert moves == [(-0.5, 0.0, 0.0, 0.0), (0.5, 0.0, 0.0, 0.0)], moves
+
+
+def test_inspect_by_hand_tour_stops_when_the_gripper_stops_holding():
+    node = _orchestrator()
+    PARAMS["~inspect_mode"] = "yaw"
+    asked = _hand_fake(holding=False)
+    node._held = _held()
+    r = node._handle_inspect_object(NS())
+    assert len(r.views) == 1, r.views                       # one view, then the guard ends the tour
+    assert asked[-1] == HOME                                # the hand still goes home before placing
+    assert len([1 for key, _ in CALLS if key == "execute_place"]) == 1
+
+
+def test_inspect_by_hand_tour_stops_at_its_time_budget():
+    node = _orchestrator()
+    PARAMS["~inspect_mode"] = "yaw"
+    PARAMS["~inspect_max_s"] = 100.0
+    asked = _hand_fake()
+    node._held = _held()
+    clock = {"t": 0.0}
+
+    def fake_time():                 # every look at the clock is 40 s later: 3 poses fit in 100 s
+        clock["t"] += 40.0
+        return clock["t"]
+
+    real = wmn.time.time
+    wmn.time.time = fake_time
+    try:
+        r = node._handle_inspect_object(NS())
+    finally:
+        wmn.time.time = real
+    assert 1 <= len(r.views) <= 3, r.views
+    assert asked[-1] == HOME                                 # the hand still goes home
+    assert len([1 for key, _ in CALLS if key == "execute_place"]) == 1
 
 
 def test_inspect_by_hand_yaw_aims_the_camera_at_the_object_then_restores_it():
     node = _orchestrator()
     PARAMS["~inspect_mode"] = "yaw"
+    PARAMS["~inspect_tilt_views"] = True
     PARAMS["~camera_smooth"] = False          # one command per aim: easy to count
     _hand_fake()
     node._held = _held()
     node._handle_inspect_object(NS())
     pans = [m.data for t, m in PUBLISHED if t.endswith("pan_controller/command")]
     tilts = [m.data for t, m in PUBLISHED if t.endswith("tilt_controller/command")]
-    assert len(pans) == 5, pans              # 4 aims + the restore
+    assert len(pans) == 8, pans              # 7 aims + the restore
     assert pans[-1] == 0.0                   # back to the fixed forward view
     assert tilts[-1] == node.tilt_near       # and the near tilt the next step assumes
     # held bottle: hand at z 0.63, centre 0.075 lower -> camera at 0.561 looks slightly UP
-    assert all(t < 0.2 for t in tilts[:-1]), tilts
+    assert all(t < 0.25 for t in tilts[:-1]), tilts
 
 
 def test_the_camera_head_moves_in_a_smooth_ramp_by_default():
@@ -303,18 +372,20 @@ def test_the_camera_head_moves_in_a_smooth_ramp_by_default():
 def test_inspect_by_hand_yaw_skips_unreachable_yaws():
     node = _orchestrator()
     PARAMS["~inspect_mode"] = "yaw"
-    _hand_fake(unreachable=(-0.5, 0.5))
+    PARAMS["~inspect_tilt_views"] = True
+    _hand_fake(unreachable=((-0.5, 0.0, 0.0), (0.5, 0.0, 0.0), (0.4, -0.3, 0.0)))
     node._held = _held()
     r = node._handle_inspect_object(NS())
-    assert len(r.views) == 2, r.views
-    assert "-0.35 to +0.35" in r.description, r.description
+    assert len(r.views) == 4, r.views                          # 7 poses, 3 unreachable
+    assert "turned 29 degrees to the left" not in r.description, r.description
+    assert "6 cm closer" in r.description, r.description
     assert node._held is None and len([1 for k, _ in CALLS if k == "execute_place"]) == 1
 
 
 def test_inspect_by_hand_yaw_falls_back_to_the_wrist_sweep_when_nothing_is_reachable():
     node = _orchestrator()
     PARAMS["~inspect_mode"] = "yaw"
-    _hand_fake(unreachable=(-0.5, -0.35, 0.35, 0.5))
+    _hand_fake(unreachable=tuple((p.yaw, p.pitch, p.dx) for p in wmn.camera_aim.INSPECT_POSES))
     node._held = _held()
     r = node._handle_inspect_object(NS())
     assert len(r.views) == len(wmn.INSPECT_OFFSET_FRACTIONS), r.views
@@ -368,8 +439,8 @@ def test_inspect_drives_the_base_back_when_the_original_position_has_crept_out_o
     node._handle_inspect_object(NS())
     drive = [kw for key, kw in CALLS if key == "drive_relative"]
     assert len(drive) == 1, drive
-    assert abs(drive[0]["turn"] - math.atan2(-0.05, 0.60)) < 1e-9      # face the original spot
-    assert abs(drive[0]["distance"] - (math.hypot(0.60, -0.05) - 0.50)) < 1e-9   # back to the 0.50 m park
+    assert drive[0]["turn"] == 0.0                                      # no turn: it ran to its 20 s deadline
+    assert abs(drive[0]["distance"] - (0.60 - math.sqrt(0.50 ** 2 - 0.05 ** 2))) < 1e-9   # to the 0.50 m park
     place = [kw for key, kw in CALLS if key == "execute_place"][0]
     assert place["exact"] is True
     assert (place["place_point"].x, place["place_point"].y) == (0.50, -0.01)
@@ -386,6 +457,63 @@ def test_the_place_drive_is_bounded():
     assert drive["distance"] == wmn.PLACE_MAX_DRIVE_M                  # not the 0.23 m the position asks for
     place = [kw for key, kw in CALLS if key == "execute_place"][0]
     assert place["exact"] is False                                      # 0.58 m: still out of reach -> grasp point
+
+
+def test_a_box_gets_axis_freedom_and_a_round_object_does_not():
+    node = _orchestrator()
+    assert node._axis_dev_deg("tea_box") == wmn.GRASP_BOX_MAX_AXIS_DEV_DEG == 25.0
+    assert node._axis_dev_deg("tea box") == 25.0               # any catalogue spelling
+    assert node._axis_dev_deg("bottle") == wmn.GRASP_MAX_AXIS_DEV_DEG == 0.0
+    assert node._axis_dev_deg("can_coke") == 0.0
+    assert node._axis_dev_deg("table") == 0.0                  # a surface is never a box to grip
+    assert node._axis_dev_deg("something_uncatalogued") == 0.0
+    assert node._axis_dev_deg(None) == 0.0
+    PARAMS["~grasp_max_axis_dev_deg"] = 10.0                   # the experiment override wins for all
+    assert node._axis_dev_deg("tea_box") == 10.0 and node._axis_dev_deg("bottle") == 10.0
+
+
+def test_a_wrong_measured_width_is_replaced_by_the_boxs_catalogue_width():
+    import grasp_geometry as gg
+    node = _orchestrator()
+    plan = NS(gripper_open=0.037, gripper_close=0.0146, full_close=True)   # a 19 mm reading
+    out = node._trust_box_width(plan, "tea_box", 0.019)
+    assert abs(gg.planned_width_mm(out.gripper_close, out.full_close) - 45.0) < 0.01
+    assert out.full_close is False and out.gripper_open == 0.037
+    near = NS(gripper_open=0.037, gripper_close=0.0285, full_close=False)  # 47 mm: within 6 mm of 45
+    out = node._trust_box_width(near, "tea_box", 0.047)
+    assert out.gripper_close == 0.0285                                      # left as planned
+    neck = NS(gripper_open=0.037, gripper_close=0.023, full_close=False)    # a bottle neck is not its catalogue size
+    out = node._trust_box_width(neck, "bottle", 0.034)
+    assert out.gripper_close == 0.023
+    out = node._trust_box_width(neck, "can_coke", 0.019)
+    assert out.gripper_close == 0.023                                       # round: never overridden
+
+
+def test_the_heading_hold_is_off_during_the_place_drive_and_back_on_after_it_and_released_at_the_end():
+    node = _orchestrator()
+    readings = iter([0.60, 0.50])
+    SERVICE_HANDLERS["target_memory"] = lambda **kw: NS(
+        ok=True, position=NS(x=next(readings) if kw["action"] == 2 else 0.0, y=0.0, z=0.47))
+    node._held = {"target_name": "bottle", "pos": [0.60, 0.0]}
+    node._handle_inspect_object(NS())
+    seq = [(key, kw.get("data")) for key, kw in CALLS if key in ("hold_heading", "drive_relative")]
+    keys = [k for k, _ in seq]
+    assert keys == ["hold_heading", "drive_relative", "hold_heading", "hold_heading"], seq
+    assert [d for k, d in seq if k == "hold_heading"] == [False, True, False]   # off, on, released
+
+
+def test_get_object_releases_the_heading_hold_when_nothing_ends_up_held():
+    node = _orchestrator()
+    node._navigate = lambda *a, **k: {}
+    node._pick = lambda *a, **k: NS(success=False)
+    node._held = None
+    node._handle_get_object(NS(target_name="tea_box"))
+    assert [kw["data"] for key, kw in CALLS if key == "hold_heading"] == [False]
+    CALLS.clear()
+    node._pick = lambda *a, **k: NS(success=True)
+    node._held = {"target_name": "tea_box", "pos": [0.5, 0.0]}      # something is in the gripper
+    r = node._handle_get_object(NS(target_name="tea_box"))
+    assert r.success is False and not [1 for key, _ in CALLS if key == "hold_heading"]
 
 
 if __name__ == "__main__":

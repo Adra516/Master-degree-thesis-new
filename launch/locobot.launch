@@ -54,6 +54,10 @@
   <arg name="yolo_model"                        default="/home/adrana/th_ws/YOLO3D/yolo11s_locobot_finetune2.pt"/>
   <arg name="use_vlm_agent"                     default="true"/>
   <arg name="vlm_model"                         default="qwen3-vl:2b-instruct"/>
+  <arg name="inspect_max_views"                 default="7"/>
+  <arg name="inspect_tilt_views"                default="false"/>
+  <arg name="inspect_image_width"               default="320"/>
+  <arg name="inspect_image_height"              default="240"/>
   <arg name="vlm_ollama_api_url"                default="http://localhost:11434/api/chat"/>
   <arg name="vlm_request_timeout"               default="60.0"/>
   <arg name="vlm_action_enabled"                default="true"/>
@@ -214,6 +218,10 @@
     <arg name="yolo_model"          value="$(arg yolo_model)"/>
     <arg name="use_vlm_agent"       value="$(arg use_vlm_agent)"/>
     <arg name="vlm_model"           value="$(arg vlm_model)"/>
+    <arg name="inspect_max_views"   value="$(arg inspect_max_views)"/>
+    <arg name="inspect_tilt_views"  value="$(arg inspect_tilt_views)"/>
+    <arg name="inspect_image_width" value="$(arg inspect_image_width)"/>
+    <arg name="inspect_image_height" value="$(arg inspect_image_height)"/>
   </include>
 
   <!-- Phase 2: damp forearm_roll. Placed LAST so it overrides the vendor gain

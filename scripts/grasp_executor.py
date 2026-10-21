@@ -80,7 +80,15 @@ PLACE_CLEARANCE = 0.005
 # (object welded mid-approach, held through the whole cycle, never slipped)
 # moved 1mm.
 MIN_CLOSE_TRAVEL_MM = 3.0
+DESCENT_GATE_DELAY_S = 2.4         # settle sleeps + hold + the gate's own read after the leg ends
+DESCENT_LEAD_MAX_MM = 10.0        # never lead the aim by more than this
+DESCENT_STAGE_FRAC = 0.55          # of the straight-in leg run before the re-aim (jaws still clear of the object)
 HAND_TURN_MAX_JOINT_DELTA = 1.6   # rad; a larger swing to a hand yaw of <=0.5 rad is the far wrist branch
+# Sideways correction of the hand AT THE STANDOFF, before the straight-in leg (see
+# _centre_at_standoff): smaller than the first is noise, larger than the second is not a
+# creep but a wrong plan, which the descent's own gate must judge.
+CENTRE_MIN_MM = 2.0
+CENTRE_MAX_MM = 30.0
 # How long to keep watching the fingers, arm still, AFTER the lift before
 # reporting the object held (live-tunable `hold_verify_s`; 0 disables).
 HOLD_VERIFY_S = 8.0
@@ -106,6 +114,7 @@ class GraspExecutor:
 
         self.table_surface_z = 0.25
         self._hand_home = None            # joints + pose a turn_hand() sequence started from
+        self._ref_last = None             # (sim time, reference xyz) of the latest _follow read
         self._last_grasp_z = None         # EE height of the last grasp (for place)
         self._last_grasp_xy = None        # where the jaws last closed (for place)
         self.last_close_target = None     # last commanded per-finger close (m)
@@ -344,7 +353,7 @@ class GraspExecutor:
 
         return True, {"placed_at": [round(x, 3), round(y, 3)]}
 
-    def turn_hand(self, yaw, move_time=0.0):
+    def turn_hand(self, yaw, move_time=0.0, pitch=0.0, dx=0.0, dy=0.0, dz=0.0):
         """Yaw the hand about the vertical through its own point (position fixed), via IK
         seeded with the arm's last commanded joints, as one joint-space move. See
         srv/TurnHand.srv. `yaw` is relative to the pose the first call of a sequence
@@ -358,7 +367,7 @@ class GraspExecutor:
             p = self.move_group.get_current_pose().pose.position
             return {"x": p.x, "y": p.y, "z": p.z}
 
-        if abs(yaw) < 1e-6:
+        if max(abs(yaw), abs(pitch), abs(dx), abs(dy), abs(dz)) < 1e-6:
             home, self._hand_home = self._hand_home, None
             if home is None:
                 return True, dict(ee_xyz(), joints=list(self.arm.last_target))
@@ -373,6 +382,8 @@ class GraspExecutor:
         home_pose = self._hand_home["pose"]
         o = home_pose.orientation
         q = quaternion_multiply(quaternion_about_axis(yaw, (0.0, 0.0, 1.0)), [o.x, o.y, o.z, o.w])
+        if abs(pitch) > 1e-9:       # about the hand's own lateral (y) axis, applied in the hand frame
+            q = quaternion_multiply(q, quaternion_about_axis(pitch, (0.0, 1.0, 0.0)))
         # The IK solver is a local one: from the held pose it often finds no solution for
         # a larger yaw, but a seed near the answer converges. Measured joint changes for a
         # +-0.5 rad hand yaw: forearm_roll ~ +-1.75 x yaw, wrist_rotate ~ -+1.1 x yaw
@@ -380,10 +391,12 @@ class GraspExecutor:
         base = list(self._hand_home["joints"])
         i_roll, i_rot = ARM_JOINTS.index("forearm_roll"), ARM_JOINTS.index("wrist_rotate")
         seeds = [base]
+        i_ang = ARM_JOINTS.index("wrist_angle")
         for k in (1.0, 0.5, 1.5):
             s_ = list(base)
             s_[i_roll] += 1.75 * yaw * k
             s_[i_rot] -= 1.1 * yaw * k
+            s_[i_ang] += pitch * k      # the wrist pitch joint carries a hand pitch almost 1:1
             seeds.append(s_)
         best, last_code, last_err = None, None, None
         for seed in seeds:
@@ -393,7 +406,9 @@ class GraspExecutor:
                 req.ik_request.ik_link_name = f"{self.ns}/ee_gripper_link"
                 ps = PoseStamped()
                 ps.header.frame_id = f"{self.ns}/base_link"
-                ps.pose.position = home_pose.position
+                ps.pose.position.x = home_pose.position.x + dx
+                ps.pose.position.y = home_pose.position.y + dy
+                ps.pose.position.z = home_pose.position.z + dz
                 ps.pose.orientation.x, ps.pose.orientation.y, ps.pose.orientation.z, ps.pose.orientation.w = q
                 req.ik_request.pose_stamped = ps
                 req.ik_request.avoid_collisions = False
@@ -416,13 +431,15 @@ class GraspExecutor:
             if d <= HAND_TURN_MAX_JOINT_DELTA:
                 break
         if best is None:
-            return False, dict(ee_xyz(), reason=f"no IK solution for a hand yaw of {yaw:+.2f} rad "
+            return False, dict(ee_xyz(), reason=f"no IK solution for hand yaw {yaw:+.2f} pitch {pitch:+.2f} "
+                                                f"offset ({dx:+.2f},{dy:+.2f},{dz:+.2f}) "
                                                 f"(MoveIt error {last_code}{', ' + last_err if last_err else ''})")
         dj, target = best
         if dj > HAND_TURN_MAX_JOINT_DELTA:
-            return False, dict(ee_xyz(), reason=f"IK found only the far wrist branch for a hand yaw of "
-                                                f"{yaw:+.2f} rad (a {dj:.1f} rad joint swing) — not taken")
-        rospy.loginfo("[arm] Turn hand: yaw %+.2f rad (max joint change %.2f rad)", yaw, dj)
+            return False, dict(ee_xyz(), reason=f"IK found only the far wrist branch for hand yaw {yaw:+.2f} "
+                                                f"pitch {pitch:+.2f} (a {dj:.1f} rad joint swing) — not taken")
+        rospy.loginfo("[arm] Turn hand: yaw %+.2f pitch %+.2f offset (%+.2f,%+.2f,%+.2f) "
+                      "(max joint change %.2f rad)", yaw, pitch, dx, dy, dz, dj)
         self.arm.send_joints(target, move_time=move_time if move_time > 0 else 2.0 + 1.8 * dj)
         self.arm.hold(0.5)
         return True, dict(ee_xyz(), joints=list(self.arm.last_target))
@@ -934,6 +951,8 @@ class GraspExecutor:
         # long, and grasp_z is floor-clamped well above the table.
         cart_plan, fraction = None, 0.0
         aim0 = (x, y, grasp_z)     # as aimed at `ref0`; every attempt re-follows from it
+        if live_param("descent_centre_at_standoff", True):
+            self._centre_at_standoff(descent_ori, aim0, ref0)
         for attempt in (1, 2):
             # Before every attempt (including after a re-seat below): the arm is
             # confidently at a known, just-verified pose here, so this is the
@@ -983,6 +1002,25 @@ class GraspExecutor:
             return False, {"phase": "descent", "verified": False,
                            "reason": f"descent path only {fraction*100:.0f}% reachable"}
 
+        # TWO STAGES (rosparam descent_two_stage, default on). The base creeps and yaws while
+        # the arm moves in (0.8 deg of yaw is 7 mm sideways at 0.5 m), so a leg aimed once at
+        # its start arrived 6-9 mm off-centre in about half of all grasps. Fresh-launch
+        # ground truth, 29 grasps (2026-10-20): 12/12 arrivals within 1 mm of the centre
+        # attached the weld at ~2.2 s and held; the off-centre ones either needed the
+        # centring slide (which disturbed the bottle, 1.0 -> 3.3 deg, and attached late or
+        # never: 7 of 12 failed) or closed lopsided (finger asymmetry 6.5 mm, no weld). So
+        # stop part of the way, while the jaws are still clear of the object, re-read the
+        # world-fixed reference and aim the last stretch at where the object is NOW.
+        if live_param("descent_two_stage", True):
+            cart_plan = self._descent_first_stage(_wp, aim0, ref0, (x, y, grasp_z), cart_plan)
+            if cart_plan is None:
+                return False, {"phase": "descent", "verified": False, "descended": False,
+                               "reason": "the second half of the straight-in leg was not reachable"}
+            if isinstance(cart_plan, tuple):          # (plan, x, y, grasp_z) after the re-aim
+                cart_plan, x, y, grasp_z = cart_plan
+                retreat_z = grasp_z + 0.15
+                self._last_grasp_xy = (x, y)
+                self._last_grasp_z = grasp_z
         cart_plan = self.move_group.retime_trajectory(
             self.robot.get_current_state(), cart_plan,
             velocity_scaling_factor=0.15, acceleration_scaling_factor=0.15)
@@ -1127,6 +1165,97 @@ class GraspExecutor:
         self._pending_grasp = None   # consumed
         return True, info
 
+    def _centre_at_standoff(self, ori, aim0, ref0):
+        """Put the hand's approach line through the aim point BEFORE going in.
+
+        The pre-grasp is verified against the point it was commanded to, but the base keeps
+        creeping through the tilt re-take (the arm retracts and extends again, ~10 s), so the
+        hand arrives at its standoff 10-25 mm to the side of where the object now is
+        (ground truth, 2026-10-21, 4 tea-box arrivals: -4, -12, -18 and -24 mm along the closing
+        axis). The straight-in leg then crossed that offset diagonally and the pads reached
+        the box with 5-15 mm still to go, against 5.5 mm of room a side: the box was struck and
+        turned 40-50 deg in 8 of 10 arrivals. The jaws are 10 cm from the object here, so the
+        sideways step is safe and short; the leg that follows is a straight line along the hand.
+
+        Moves along the hand's own closing axis only, so the approach direction and the hand's
+        orientation are untouched. Returns the shift made, in metres (0.0 when none)."""
+        try:
+            ax, ay, _ = self._follow(aim0, ref0, "lateral centring")
+            p = self.move_group.get_current_pose().pose.position
+            e, (ux, uy) = gg.lateral_offset((ax, ay), (p.x, p.y), [ori.x, ori.y, ori.z, ori.w])
+        except Exception as exc:        # a refinement must never break a grasp
+            rospy.logwarn("[arm] could not measure the sideways offset at the standoff: %s", exc)
+            return 0.0
+        mm = abs(e) * 1000.0
+        if mm < CENTRE_MIN_MM:
+            return 0.0
+        if mm > CENTRE_MAX_MM:
+            rospy.logwarn("[arm] Hand is %.0f mm to the side of the object at the standoff — more "
+                          "than a creep (limit %.0f mm), leaving it to the leg and the gate",
+                          mm, CENTRE_MAX_MM)
+            return 0.0
+        rospy.loginfo("[arm] Hand is %+.1f mm off the object's line at the standoff — "
+                      "centring before going in", e * 1000.0)
+        ok, _ = self.shift(e * ux, e * uy, 0.0, move_time=1.0, unwind=False)
+        self.arm.hold(0.4)
+        return e if ok else 0.0
+
+    def _descent_first_stage(self, _wp, aim0, ref0, final_xyz, full_plan):
+        """Run the first part of the straight-in leg and re-aim the rest.
+
+        Returns the plan to execute next: `full_plan` unchanged when staging is not
+        possible (the leg is short, the first stage is not fully reachable, or there is no
+        reference to follow), (plan, x, y, grasp_z) after a re-aim, or None when the second
+        half cannot be planned (the jaws are then still clear of the object)."""
+        x, y, grasp_z = final_xyz
+        if ref0 is None:
+            return full_plan
+        p0 = self.move_group.get_current_pose().pose.position
+        leg = math.hypot(x - p0.x, y - p0.y)
+        frac = live_param("descent_stage_frac", DESCENT_STAGE_FRAC)
+        if leg < 0.06 or not 0.2 <= frac <= 0.8:
+            return full_plan
+        stop = (p0.x + frac * (x - p0.x), p0.y + frac * (y - p0.y), p0.z + frac * (grasp_z - p0.z))
+        plan1, f1 = self.move_group.compute_cartesian_path([_wp(*stop)], 0.005, False)
+        if f1 < 0.95:
+            rospy.logwarn("[arm] First stage of the leg only %.0f%% reachable — running the whole "
+                          "leg in one go", f1 * 100)
+            return full_plan
+        ref_a = self._ref_last          # the read taken when this attempt's aim was set
+        plan1 = self.move_group.retime_trajectory(
+            self.robot.get_current_state(), plan1,
+            velocity_scaling_factor=0.15, acceleration_scaling_factor=0.15)
+        dur = self.arm.publish_trajectory(plan1)
+        rospy.loginfo("[arm] Descent stage 1: %.0f%% of the %.0f mm leg (%.1fs)", frac * 100,
+                      leg * 1000, dur)
+        rospy.sleep(dur + 0.5)
+        self.arm.hold(0.5)
+        x, y, grasp_z = self._follow(aim0, ref0, "second half of the leg")
+        # The base keeps creeping at a steady 1-2 mm/s (measured 2026-10-20: 3 mm at the
+        # start of the leg, 6-7 mm at this point, 11-14 mm at the contact gate), so a
+        # re-aim to where the object is NOW is already late by the time the jaws arrive.
+        # Aim where it WILL be at the gate: the creep velocity between the two reads, over
+        # the time that is left (second half of the leg + the settle-holds + the gate).
+        ref_b = self._ref_last
+        if live_param("descent_creep_lead", True) and ref_a is not None and ref_b is not None:
+            dt = ref_b[0] - ref_a[0]
+            if dt >= 1.5:
+                ahead = dur * (1.0 - frac) / frac + DESCENT_GATE_DELAY_S
+                lead = [(ref_b[1][i] - ref_a[1][i]) / dt * ahead for i in range(3)]
+                mag = math.hypot(lead[0], lead[1]) * 1000.0
+                if mag <= DESCENT_LEAD_MAX_MM:
+                    rospy.loginfo("[arm] Creep lead: the base has drifted the object %.1f mm/s; "
+                                  "aiming %.1f mm ahead for the %.1f s still to go",
+                                  math.hypot(ref_b[1][0] - ref_a[1][0], ref_b[1][1] - ref_a[1][1]) / dt * 1000.0,
+                                  mag, ahead)
+                    x, y = x + lead[0], y + lead[1]
+                    grasp_z = grasp_z + max(-0.004, min(0.004, lead[2]))
+        plan2, f2 = self.move_group.compute_cartesian_path([_wp(x, y, grasp_z)], 0.005, False)
+        if f2 < 0.80:
+            rospy.logwarn("[arm] Second half of the leg only %.0f%% reachable — aborting", f2 * 100)
+            return None
+        return plan2, x, y, grasp_z
+
     def _reproject(self):
         """Where the odometry-held object reference is now, base_link (x, y, z), or None."""
         fn = self.object_ref_fn
@@ -1142,8 +1271,11 @@ class GraspExecutor:
         """`aim_xyz`, carried along with the object since `ref0` was read."""
         if ref0 is None:
             return tuple(aim_xyz)
+        now = self._reproject()
+        if now is not None:
+            self._ref_last = (rospy.Time.now().to_sec(), tuple(now))   # for the creep-rate estimate
         aim, verdict, (dxy, dz) = gg.follow_reference(
-            aim_xyz, ref0, self._reproject(),
+            aim_xyz, ref0, now,
             tol_xy_mm=live_param("follow_xy_tol_mm", 2.0),
             tol_z_mm=live_param("follow_z_tol_mm", 3.0))
         if verdict == "followed":
